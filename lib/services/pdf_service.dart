@@ -12,7 +12,6 @@ class PdfService {
     final currencyFormat = NumberFormat.simpleCurrency();
     final dateFormat = DateFormat.yMMMd();
 
-    // We use a MultiPage to handle long lists that span multiple pages
     pdf.addPage(
       pw.MultiPage(
         pageFormat: PdfPageFormat.a4,
@@ -50,12 +49,22 @@ class PdfService {
   }
 
   static pw.Widget _buildItemRow(Item item, NumberFormat currency, DateFormat date) {
-    // We try to load the first image. If it fails or is empty, we show a placeholder.
+    // Point 8 & 11: Defensive Image Loading
     pw.MemoryImage? imageProvider;
+
     if (item.imagePaths.isNotEmpty) {
-      final file = File(item.imagePaths[0]);
-      if (file.existsSync()) {
-        imageProvider = pw.MemoryImage(file.readAsBytesSync());
+      try {
+        final file = File(item.imagePaths[0]);
+        // Point 8: Verify existence so readAsBytesSync doesn't throw a FileSystemException
+        if (file.existsSync()) {
+          // Point 11: In a production app, we would ideally use a resized
+          // thumbnail here to save RAM, but checking existence is the first priority.
+          imageProvider = pw.MemoryImage(file.readAsBytesSync());
+        }
+      } catch (e) {
+        // If something goes wrong with a specific image, we log it and
+        // let the PDF continue generating without that image.
+        print("Error loading image for PDF: $e");
       }
     }
 
@@ -69,13 +78,20 @@ class PdfService {
       child: pw.Row(
         crossAxisAlignment: pw.CrossAxisAlignment.start,
         children: [
-          // Image Thumbnail
+          // Image Thumbnail with fixed sizing to prevent layout shifts
           pw.Container(
             width: 80,
             height: 80,
+            color: PdfColors.grey100, // Light background for missing images
             child: imageProvider != null
                 ? pw.Image(imageProvider, fit: pw.BoxFit.cover)
-                : pw.Center(child: pw.Text("No Image", style: const pw.TextStyle(fontSize: 8))),
+                : pw.Center(
+              child: pw.Text(
+                item.imagePaths.isEmpty ? "No Photo" : "Photo Error",
+                style: const pw.TextStyle(fontSize: 7),
+                textAlign: pw.TextAlign.center,
+              ),
+            ),
           ),
           pw.SizedBox(width: 15),
           // Details
@@ -83,11 +99,17 @@ class PdfService {
             child: pw.Column(
               crossAxisAlignment: pw.CrossAxisAlignment.start,
               children: [
-                pw.Text(item.name, style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 14)),
-                pw.Text("Room: ${item.room ?? 'N/A'} | Category: ${item.category ?? 'N/A'}", style: const pw.TextStyle(fontSize: 10)),
+                pw.Text(item.name, style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 13)),
+                pw.SizedBox(height: 2),
+                pw.Text("Room: ${item.room ?? 'N/A'} | Category: ${item.category ?? 'N/A'}", style: const pw.TextStyle(fontSize: 9)),
                 if (item.serialNumber != null && item.serialNumber!.isNotEmpty)
-                  pw.Text("Serial: ${item.serialNumber}", style: const pw.TextStyle(fontSize: 10)),
-                pw.Text("Purchased: ${date.format(item.purchaseDate)}", style: const pw.TextStyle(fontSize: 10)),
+                  pw.Text("Serial: ${item.serialNumber}", style: const pw.TextStyle(fontSize: 9)),
+                pw.Text("Purchased: ${date.format(item.purchaseDate)}", style: const pw.TextStyle(fontSize: 9)),
+                if (item.notes != null && item.notes!.isNotEmpty)
+                  pw.Padding(
+                    padding: const pw.EdgeInsets.only(top: 4),
+                    child: pw.Text("Notes: ${item.notes}", style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700)),
+                  ),
               ],
             ),
           ),

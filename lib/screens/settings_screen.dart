@@ -24,14 +24,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _refreshLists() async {
     final r = await _prefs.getRooms();
     final c = await _prefs.getCategories();
-    setState(() {
-      _rooms = r;
-      _categories = c;
-    });
+    if (mounted) {
+      setState(() {
+        _rooms = r;
+        _categories = c;
+      });
+    }
   }
+
+  // --- LOGIC ---
 
   void _showAddDialog(bool isRoom) {
     final controller = TextEditingController();
+    final colorScheme = Theme.of(context).colorScheme;
+
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -39,21 +45,86 @@ class _SettingsScreenState extends State<SettingsScreen> {
         content: TextField(
           controller: controller,
           autofocus: true,
-          decoration: InputDecoration(hintText: isRoom ? 'e.g. Attic' : 'e.g. Collectibles'),
+          textCapitalization: TextCapitalization.words,
+          decoration: InputDecoration(
+            hintText: isRoom ? 'e.g. Attic' : 'e.g. Collectibles',
+            border: const OutlineInputBorder(),
+          ),
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          TextButton(
+          ElevatedButton(
             onPressed: () async {
-              if (controller.text.isNotEmpty) {
-                isRoom
-                    ? await _prefs.addRoom(controller.text)
-                    : await _prefs.addCategory(controller.text);
+              if (controller.text.trim().isNotEmpty) {
+                final text = controller.text.trim();
+                isRoom ? await _prefs.saveRooms([..._rooms, text]) : await _prefs.saveCategories([..._categories, text]);
                 _refreshLists();
-                Navigator.pop(ctx);
+                if (mounted) Navigator.pop(ctx);
               }
             },
             child: const Text('Add'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _handleDelete(bool isRoom, String itemName) async {
+    final inventory = Provider.of<InventoryProvider>(context, listen: false);
+
+    // Using the count logic we discussed
+    int count = isRoom
+        ? inventory.items.where((i) => i.room == itemName).length
+        : inventory.items.where((i) => i.category == itemName).length;
+
+    if (count > 0) {
+      _showDeleteWarning(itemName, count, isRoom);
+    } else {
+      _performDelete(isRoom, itemName);
+    }
+  }
+
+  Future<void> _performDelete(bool isRoom, String itemName) async {
+    if (isRoom) {
+      _rooms.remove(itemName);
+      await _prefs.saveRooms(_rooms);
+    } else {
+      _categories.remove(itemName);
+      await _prefs.saveCategories(_categories);
+    }
+    _refreshLists();
+  }
+
+  // --- UI COMPONENTS ---
+
+  void _showDeleteWarning(String name, int count, bool isRoom) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, color: colorScheme.error),
+            const SizedBox(width: 10),
+            const Text('Items in Use'),
+          ],
+        ),
+        content: Text(
+            'There are $count items currently assigned to the ${isRoom ? 'Room' : 'Category'} "$name".\n\n'
+                'If you delete this, those items will keep the label "$name", but it will no longer appear in your selection lists. Proceed?'
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('CANCEL'),
+          ),
+          TextButton(
+            onPressed: () {
+              _performDelete(isRoom, name);
+              Navigator.pop(ctx);
+            },
+            child: Text('DELETE ANYWAY', style: TextStyle(color: colorScheme.error)),
           ),
         ],
       ),
@@ -69,8 +140,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           title: const Text('Manage Lists'),
           bottom: const TabBar(
             tabs: [
-              Tab(icon: Icon(Icons.room), text: 'Rooms'),
-              Tab(icon: Icon(Icons.category), text: 'Categories'),
+              Tab(icon: Icon(Icons.meeting_room), text: 'Rooms'),
+              Tab(icon: Icon(Icons.style), text: 'Categories'),
             ],
           ),
         ),
@@ -80,74 +151,46 @@ class _SettingsScreenState extends State<SettingsScreen> {
             _buildList(false, _categories),
           ],
         ),
-        floatingActionButton: FloatingActionButton(
-          onPressed: () {
-            final tabIndex = DefaultTabController.of(context).index;
-            _showAddDialog(tabIndex == 0);
-          },
-          child: const Icon(Icons.add),
+        floatingActionButton: Builder(
+          builder: (context) => FloatingActionButton.extended(
+            onPressed: () {
+              final tabIndex = DefaultTabController.of(context).index;
+              _showAddDialog(tabIndex == 0);
+            },
+            label: const Text('Add New'),
+            icon: const Icon(Icons.add),
+          ),
         ),
       ),
     );
   }
 
   Widget _buildList(bool isRoom, List<String> items) {
-    final inventory = Provider.of<InventoryProvider>(context, listen: false);
+    if (items.isEmpty) {
+      return Center(
+        child: Text(
+          'No ${isRoom ? 'rooms' : 'categories'} added yet.',
+          style: const TextStyle(color: Colors.grey),
+        ),
+      );
+    }
 
-    return ListView.builder(
+    return ListView.separated(
+      padding: const EdgeInsets.all(8),
       itemCount: items.length,
+      separatorBuilder: (context, index) => const Divider(height: 1),
       itemBuilder: (ctx, i) {
         final itemName = items[i];
         return ListTile(
           title: Text(itemName),
+          leading: Icon(isRoom ? Icons.door_front_door_outlined : Icons.label_outline),
           trailing: IconButton(
-            icon: const Icon(Icons.delete_outline, color: Colors.red),
-            onPressed: () async {
-              // Check if items are assigned to this room/category
-              int count = isRoom
-                  ? inventory.getItemsCountInRoom(itemName)
-                  : inventory.getItemsCountInCategory(itemName);
-
-              if (count > 0) {
-                // Show Warning Dialog
-                _showDeleteWarning(context, itemName, count, isRoom);
-              } else {
-                // Delete immediately if empty
-                isRoom
-                    ? await _prefs.removeRoom(itemName)
-                    : await _prefs.removeCategory(itemName);
-                _refreshLists();
-              }
-            },
+            icon: const Icon(Icons.delete_outline),
+            color: Theme.of(context).colorScheme.error,
+            onPressed: () => _handleDelete(isRoom, itemName),
           ),
         );
       },
-    );
-  }
-
-  void _showDeleteWarning(BuildContext context, String name, int count, bool isRoom) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Warning: List Item in Use'),
-        content: Text(
-            'There are $count items currently assigned to the "${isRoom ? 'Room' : 'Category'}": $name.\n\n'
-                'If you delete this, existing items will keep the name, but you won\'t be able to select it for new items. Proceed?'
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          TextButton(
-            onPressed: () async {
-              isRoom
-                  ? await _prefs.removeRoom(name)
-                  : await _prefs.removeCategory(name);
-              _refreshLists();
-              if (mounted) Navigator.pop(ctx);
-            },
-            child: const Text('Delete Anyway', style: TextStyle(color: Colors.orange)),
-          ),
-        ],
-      ),
     );
   }
 }

@@ -50,18 +50,21 @@ class Item {
   // Create an Item object from a Map (fetched from SQLite)
   factory Item.fromMap(Map<String, dynamic> map) {
     return Item(
-      id: map['id'],
-      name: map['name'],
-      // Decode the JSON string back into a List<String>
-      imagePaths: List<String>.from(jsonDecode(map['imagePaths'] ?? '[]')),
-      value: map['value'],
-      purchaseDate: DateTime.parse(map['purchaseDate']),
+      id: map['id'] as int?,
+      name: map['name'] ?? '',
+      value: (map['value'] as num?)?.toDouble() ?? 0.0,
+      purchaseDate: map['purchaseDate'] != null
+          ? DateTime.tryParse(map['purchaseDate']) ?? DateTime.now()
+          : DateTime.now(),
+      imagePaths: map['imagePaths'] != null
+          ? List<String>.from(jsonDecode(map['imagePaths']))
+          : [],
+      room: map['room'],
+      category: map['category'],
       serialNumber: map['serialNumber'],
       brand: map['brand'],
       model: map['model'],
       notes: map['notes'],
-      room: map['room'],
-      category: map['category'],
     );
   }
 }

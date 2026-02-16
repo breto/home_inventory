@@ -8,7 +8,6 @@ import '../models/item.dart';
 import '../providers/inventory_provider.dart';
 import '../services/preferences_service.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
-// Ensure you have added mobile_scanner to pubspec.yaml
 import '../widgets/barcode_scanner.dart';
 
 class AddItemScreen extends StatefulWidget {
@@ -42,8 +41,8 @@ class _AddItemScreenState extends State<AddItemScreen> {
   @override
   void initState() {
     super.initState();
-    _loadPreferences();
 
+    // 1. If editing, populate values immediately to avoid UI flickering
     if (widget.itemToEdit != null) {
       final item = widget.itemToEdit!;
       _nameController.text = item.name;
@@ -56,18 +55,39 @@ class _AddItemScreenState extends State<AddItemScreen> {
       _selectedCategory = item.category;
       _imageFiles = item.imagePaths.map((path) => File(path)).toList();
     }
+
+    // 2. Load preferences asynchronously
+    _loadPreferences();
+  }
+
+  @override
+  void dispose() {
+    // FIX (Point 1): Prevent memory leaks by disposing all controllers
+    _nameController.dispose();
+    _valueController.dispose();
+    _serialController.dispose();
+    _brandController.dispose();
+    _modelController.dispose();
+    _notesController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadPreferences() async {
     final r = await _prefs.getRooms();
     final c = await _prefs.getCategories();
+
+    if (!mounted) return;
+
     setState(() {
       _rooms = r;
       _categories = c;
-      // Only set defaults if we aren't editing an item
-      if (widget.itemToEdit == null) {
-        if (_rooms.isNotEmpty) _selectedRoom = _rooms[0];
-        if (_categories.isNotEmpty) _selectedCategory = _categories[0];
+
+      // FIX (Point 2): Prevent clobbering. Only set defaults if selection is null.
+      if (_selectedRoom == null && _rooms.isNotEmpty) {
+        _selectedRoom = _rooms[0];
+      }
+      if (_selectedCategory == null && _categories.isNotEmpty) {
+        _selectedCategory = _categories[0];
       }
     });
   }
@@ -101,6 +121,7 @@ class _AddItemScreenState extends State<AddItemScreen> {
       List<String> savedPaths = [];
 
       for (var file in _imageFiles) {
+        // If file is already internal (Editing), don't re-compress
         if (file.path.contains(appDir.path)) {
           savedPaths.add(file.path);
         } else {
@@ -157,6 +178,9 @@ class _AddItemScreenState extends State<AddItemScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // FIX (Point 15): Access the app theme for consistent UI colors
+    final theme = Theme.of(context);
+
     return Scaffold(
       appBar: AppBar(title: Text(widget.itemToEdit == null ? 'Add Item Details' : 'Edit Item')),
       body: _isSaving
@@ -167,6 +191,7 @@ class _AddItemScreenState extends State<AddItemScreen> {
           key: _formKey,
           child: Column(
             children: [
+              // PHOTO GALLERY
               SizedBox(
                 height: 120,
                 child: ListView.builder(
@@ -179,8 +204,10 @@ class _AddItemScreenState extends State<AddItemScreen> {
                 ),
               ),
               const SizedBox(height: 20),
+
               _buildTextField(_nameController, 'Item Name', Icons.inventory_2),
               _buildTextField(_valueController, 'Estimated Value (\$)', Icons.monetization_on, isNumber: true),
+
               Row(
                 children: [
                   Expanded(child: _buildDropdown('Room', _selectedRoom, _rooms, (val) => setState(() => _selectedRoom = val))),
@@ -188,6 +215,7 @@ class _AddItemScreenState extends State<AddItemScreen> {
                   Expanded(child: _buildDropdown('Category', _selectedCategory, _categories, (val) => setState(() => _selectedCategory = val))),
                 ],
               ),
+
               Row(
                 children: [
                   Expanded(child: _buildTextField(_brandController, 'Brand', Icons.factory)),
@@ -195,18 +223,21 @@ class _AddItemScreenState extends State<AddItemScreen> {
                   Expanded(child: _buildTextField(_modelController, 'Model #', Icons.label_important)),
                 ],
               ),
-              // NEW: Serial Number with Scanner button
+
               _buildScanTextField(_serialController, 'Serial Number / UPC', Icons.qr_code_scanner),
               _buildTextField(_notesController, 'Notes / Description', Icons.description, maxLines: 3),
+
               const SizedBox(height: 30),
+
               ElevatedButton.icon(
                 onPressed: _saveItem,
                 icon: const Icon(Icons.check_circle),
                 label: Text(widget.itemToEdit == null ? 'SAVE TO INVENTORY' : 'UPDATE ITEM', style: const TextStyle(fontSize: 16)),
                 style: ElevatedButton.styleFrom(
                   minimumSize: const Size(double.infinity, 55),
-                  backgroundColor: Colors.blueAccent,
-                  foregroundColor: Colors.white,
+                  // Using theme colors
+                  backgroundColor: theme.colorScheme.primary,
+                  foregroundColor: theme.colorScheme.onPrimary,
                 ),
               ),
             ],
@@ -227,14 +258,14 @@ class _AddItemScreenState extends State<AddItemScreen> {
           labelText: label,
           prefixIcon: Icon(icon),
           suffixIcon: IconButton(
-            icon: const Icon(Icons.camera_alt, color: Colors.blueAccent),
+            icon: Icon(Icons.camera_alt, color: Theme.of(context).colorScheme.primary),
             tooltip: 'Scan Barcode',
             onPressed: () async {
               final String? scannedCode = await Navigator.push(
                 context,
                 MaterialPageRoute(builder: (context) => const BarcodeScannerWidget()),
               );
-              if (scannedCode != null) {
+              if (scannedCode != null && mounted) {
                 setState(() => controller.text = scannedCode);
               }
             },
@@ -283,7 +314,7 @@ class _AddItemScreenState extends State<AddItemScreen> {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(12),
             image: DecorationImage(image: FileImage(_imageFiles[index]), fit: BoxFit.cover),
-            border: Border.all(color: Colors.blueAccent.withOpacity(0.3)),
+            border: Border.all(color: Theme.of(context).colorScheme.primary.withOpacity(0.3)),
           ),
         ),
         Positioned(
@@ -303,21 +334,22 @@ class _AddItemScreenState extends State<AddItemScreen> {
   }
 
   Widget _buildAddPhotoButton() {
+    final theme = Theme.of(context);
     return GestureDetector(
       onTap: () => _showPickerOptions(),
       child: Container(
         width: 100,
         decoration: BoxDecoration(
-          color: Colors.blueGrey[50],
+          color: theme.colorScheme.surfaceVariant,
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.blueGrey[200]!, style: BorderStyle.solid),
+          border: Border.all(color: theme.colorScheme.outlineVariant),
         ),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.add_a_photo, color: Colors.blueGrey[400]),
+            Icon(Icons.add_a_photo, color: theme.colorScheme.primary),
             const SizedBox(height: 4),
-            Text("Add Photo", style: TextStyle(fontSize: 12, color: Colors.blueGrey[600])),
+            Text("Add Photo", style: TextStyle(fontSize: 12, color: theme.colorScheme.primary)),
           ],
         ),
       ),

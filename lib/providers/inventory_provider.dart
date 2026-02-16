@@ -29,6 +29,14 @@ class InventoryProvider with ChangeNotifier {
     }).toList();
   }
 
+  int getItemCountByRoom(String roomName) {
+    return _items.where((item) => item.room == roomName).length;
+  }
+
+  int getItemCountByCategory(String categoryName) {
+    return _items.where((item) => item.category == categoryName).length;
+  }
+
   // Calculates the total value for the AppBar chip
   double get totalValue {
     return _items.fold(0.0, (sum, item) => sum + item.value);

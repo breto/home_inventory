@@ -1,7 +1,7 @@
-import 'dart:developer' as dev; // Use developer log for structured logging
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import '../models/item.dart';
+import 'dart:developer' as dev;
 
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
@@ -9,99 +9,100 @@ class DatabaseHelper {
 
   DatabaseHelper._init();
 
+  // Point 9: Consistent naming and versioning
+  static const String _dbName = 'inventory.db';
+  static const int _dbVersion = 3;
+
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('inventory_v3.db');
+    _database = await _initDB(_dbName);
     return _database!;
   }
 
   Future<Database> _initDB(String filePath) async {
-    try {
-      final dbPath = await getDatabasesPath();
-      final path = join(dbPath, filePath);
-      return await openDatabase(path, version: 1, onCreate: _createDB);
-    } catch (e, stackTrace) {
-      dev.log('Error initializing database', name: 'DATABASE', error: e, stackTrace: stackTrace);
-      rethrow;
-    }
+    final dbPath = await getDatabasesPath();
+    final path = join(dbPath, filePath);
+
+    return await openDatabase(
+      path,
+      version: _dbVersion,
+      onCreate: _createDB,
+      onUpgrade: _onUpgrade, // Point 5: Migration support
+    );
   }
 
   Future _createDB(Database db, int version) async {
-    try {
-      const idType = 'INTEGER PRIMARY KEY AUTOINCREMENT';
-      const textType = 'TEXT';
-      const realType = 'REAL';
+    const idType = 'INTEGER PRIMARY KEY AUTOINCREMENT';
+    const textType = 'TEXT NOT NULL';
+    const textNullable = 'TEXT';
+    const doubleType = 'REAL NOT NULL';
 
-      await db.execute('''
-        CREATE TABLE items ( 
-          id $idType, 
-          name $textType NOT NULL,
-          imagePaths $textType NOT NULL, 
-          value $realType NOT NULL,
-          purchaseDate $textType NOT NULL,
-          serialNumber $textType,
-          brand $textType,
-          model $textType,
-          notes $textType,
-          room $textType,
-          category $textType
-        )
-      ''');
-      dev.log('Database table created successfully', name: 'DATABASE');
-    } catch (e, stackTrace) {
-      dev.log('Error creating database table', name: 'DATABASE', error: e, stackTrace: stackTrace);
+    await db.execute('''
+CREATE TABLE items (
+  id $idType,
+  name $textType,
+  value $doubleType,
+  purchaseDate $textType,
+  imagePaths $textType,
+  room $textNullable,
+  category $textNullable,
+  serialNumber $textNullable,
+  brand $textNullable,
+  model $textNullable,
+  notes $textNullable
+)
+    ''');
+  }
+
+  // Point 5: Handle future database changes without wiping user data
+  Future _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    dev.log("Upgrading database from $oldVersion to $newVersion");
+    if (oldVersion < 3) {
+      // Future migration logic goes here
     }
   }
 
   Future<int> create(Item item) async {
     try {
-      final db = await database;
-      final id = await db.insert('items', item.toMap());
-      dev.log('Created item with ID: $id', name: 'DATABASE');
-      return id;
-    } catch (e, stackTrace) {
-      dev.log('Error inserting item', name: 'DATABASE', error: e, stackTrace: stackTrace);
-      return -1; // Return -1 to indicate failure
+      final db = await instance.database;
+      return await db.insert('items', item.toMap());
+    } catch (e) {
+      // Point 10: Better error context
+      dev.log("Database Error (Create): $e");
+      rethrow; // Rethrow so the Provider/UI can catch and show a message
     }
   }
 
   Future<List<Item>> readAllItems() async {
-    try {
-      final db = await database;
-      final result = await db.query('items', orderBy: 'id DESC');
-      return result.map((json) => Item.fromMap(json)).toList();
-    } catch (e, stackTrace) {
-      dev.log('Error reading all items', name: 'DATABASE', error: e, stackTrace: stackTrace);
-      return [];
-    }
-  }
-
-  Future<int> delete(int id) async {
-    try {
-      final db = await database;
-      final count = await db.delete('items', where: 'id = ?', whereArgs: [id]);
-      dev.log('Deleted item ID: $id (Rows affected: $count)', name: 'DATABASE');
-      return count;
-    } catch (e, stackTrace) {
-      dev.log('Error deleting item', name: 'DATABASE', error: e, stackTrace: stackTrace);
-      return 0;
-    }
+    final db = await instance.database;
+    final result = await db.query('items', orderBy: 'name ASC');
+    return result.map((json) => Item.fromMap(json)).toList();
   }
 
   Future<int> update(Item item) async {
-    try {
-      final db = await instance.database;
-      final count = await db.update(
-        'items',
-        item.toMap(),
-        where: 'id = ?',
-        whereArgs: [item.id],
-      );
-      dev.log('Updated item ID: ${item.id} (Rows affected: $count)', name: 'DATABASE');
-      return count;
-    } catch (e, stackTrace) {
-      dev.log('Error updating item', name: 'DATABASE', error: e, stackTrace: stackTrace);
-      return 0;
+    final db = await instance.database;
+    return db.update(
+      'items',
+      item.toMap(),
+      where: 'id = ?',
+      whereArgs: [item.id],
+    );
+  }
+
+  Future<int> delete(int id) async {
+    final db = await instance.database;
+    return await db.delete(
+      'items',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  // Point 5: Add a close method for clean app termination/testing
+  Future close() async {
+    final db = await _database;
+    if (db != null) {
+      await db.close();
     }
   }
 }
