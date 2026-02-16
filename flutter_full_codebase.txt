@@ -1,0 +1,1673 @@
+FLUTTER PROJECT CODEBASE BUNDLE
+Generated for Gemini Analysis
+
+
+============================================================
+PATH: .\analysis_options.yaml
+============================================================
+
+# This file configures the analyzer, which statically analyzes Dart code to
+# check for errors, warnings, and lints.
+#
+# The issues identified by the analyzer are surfaced in the UI of Dart-enabled
+# IDEs (https://dart.dev/tools#ides-and-editors). The analyzer can also be
+# invoked from the command line by running `flutter analyze`.
+
+# The following line activates a set of recommended lints for Flutter apps,
+# packages, and plugins designed to encourage good coding practices.
+include: package:flutter_lints/flutter.yaml
+
+linter:
+  # The lint rules applied to this project can be customized in the
+  # section below to disable rules from the `package:flutter_lints/flutter.yaml`
+  # included above or to enable additional rules. A list of all available lints
+  # and their documentation is published at https://dart.dev/lints.
+  #
+  # Instead of disabling a lint rule for the entire project in the
+  # section below, it can also be suppressed for a single line of code
+  # or a specific dart file by using the `// ignore: name_of_lint` and
+  # `// ignore_for_file: name_of_lint` syntax on the line or in the file
+  # producing the lint.
+  rules:
+    # avoid_print: false  # Uncomment to disable the `avoid_print` rule
+    # prefer_single_quotes: true  # Uncomment to enable the `prefer_single_quotes` rule
+
+# Additional information about this file can be found at
+# https://dart.dev/guides/language/analysis-options
+
+
+============================================================
+PATH: .\devtools_options.yaml
+============================================================
+
+description: This file stores settings for Dart & Flutter DevTools.
+documentation: https://docs.flutter.dev/tools/devtools/extensions#configure-extension-enablement-states
+extensions:
+
+
+============================================================
+PATH: .\pubspec.yaml
+============================================================
+
+name: home_inventory
+description: "A new Flutter project."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.10.8
+
+# Section 1: Packages your app NEEDS to run
+dependencies:
+  flutter:
+    sdk: flutter
+  provider: ^6.1.1
+  sqflite: ^2.3.0
+  path: ^1.8.3
+  image_picker: ^1.0.4
+  path_provider: ^2.1.1
+  intl: ^0.20.2
+  archive: ^4.0.7
+  share_plus: ^12.0.1
+  shared_preferences: ^2.2.2
+  pdf: ^3.10.7
+  printing: ^5.11.1
+  flutter_image_compress: ^2.3.0
+
+# Section 2: Tools for you (the developer) only
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+
+============================================================
+PATH: .\lib\main.dart
+============================================================
+
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'providers/inventory_provider.dart';
+import 'screens/home_screen.dart';
+
+void main() {
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return ChangeNotifierProvider(
+      create: (context) => InventoryProvider()..fetchItems(),
+      child: MaterialApp(
+        title: 'Home Inventory',
+        theme: ThemeData(
+          primarySwatch: Colors.blue,
+          useMaterial3: true,
+        ),
+        home: const HomeScreen(),
+      ),
+    );
+  }
+}
+
+============================================================
+PATH: .\lib\data\database_helper.dart
+============================================================
+
+import 'dart:developer' as dev; // Use developer log for structured logging
+import 'package:sqflite/sqflite.dart';
+import 'package:path/path.dart';
+import '../models/item.dart';
+
+class DatabaseHelper {
+  static final DatabaseHelper instance = DatabaseHelper._init();
+  static Database? _database;
+
+  DatabaseHelper._init();
+
+  Future<Database> get database async {
+    if (_database != null) return _database!;
+    _database = await _initDB('inventory_v3.db');
+    return _database!;
+  }
+
+  Future<Database> _initDB(String filePath) async {
+    try {
+      final dbPath = await getDatabasesPath();
+      final path = join(dbPath, filePath);
+      return await openDatabase(path, version: 1, onCreate: _createDB);
+    } catch (e, stackTrace) {
+      dev.log('Error initializing database', name: 'DATABASE', error: e, stackTrace: stackTrace);
+      rethrow;
+    }
+  }
+
+  Future _createDB(Database db, int version) async {
+    try {
+      const idType = 'INTEGER PRIMARY KEY AUTOINCREMENT';
+      const textType = 'TEXT';
+      const realType = 'REAL';
+
+      await db.execute('''
+        CREATE TABLE items ( 
+          id $idType, 
+          name $textType NOT NULL,
+          imagePaths $textType NOT NULL, 
+          value $realType NOT NULL,
+          purchaseDate $textType NOT NULL,
+          serialNumber $textType,
+          brand $textType,
+          model $textType,
+          notes $textType,
+          room $textType,
+          category $textType
+        )
+      ''');
+      dev.log('Database table created successfully', name: 'DATABASE');
+    } catch (e, stackTrace) {
+      dev.log('Error creating database table', name: 'DATABASE', error: e, stackTrace: stackTrace);
+    }
+  }
+
+  Future<int> create(Item item) async {
+    try {
+      final db = await database;
+      final id = await db.insert('items', item.toMap());
+      dev.log('Created item with ID: $id', name: 'DATABASE');
+      return id;
+    } catch (e, stackTrace) {
+      dev.log('Error inserting item', name: 'DATABASE', error: e, stackTrace: stackTrace);
+      return -1; // Return -1 to indicate failure
+    }
+  }
+
+  Future<List<Item>> readAllItems() async {
+    try {
+      final db = await database;
+      final result = await db.query('items', orderBy: 'id DESC');
+      return result.map((json) => Item.fromMap(json)).toList();
+    } catch (e, stackTrace) {
+      dev.log('Error reading all items', name: 'DATABASE', error: e, stackTrace: stackTrace);
+      return [];
+    }
+  }
+
+  Future<int> delete(int id) async {
+    try {
+      final db = await database;
+      final count = await db.delete('items', where: 'id = ?', whereArgs: [id]);
+      dev.log('Deleted item ID: $id (Rows affected: $count)', name: 'DATABASE');
+      return count;
+    } catch (e, stackTrace) {
+      dev.log('Error deleting item', name: 'DATABASE', error: e, stackTrace: stackTrace);
+      return 0;
+    }
+  }
+
+  Future<int> update(Item item) async {
+    try {
+      final db = await instance.database;
+      final count = await db.update(
+        'items',
+        item.toMap(),
+        where: 'id = ?',
+        whereArgs: [item.id],
+      );
+      dev.log('Updated item ID: ${item.id} (Rows affected: $count)', name: 'DATABASE');
+      return count;
+    } catch (e, stackTrace) {
+      dev.log('Error updating item', name: 'DATABASE', error: e, stackTrace: stackTrace);
+      return 0;
+    }
+  }
+}
+
+============================================================
+PATH: .\lib\models\item.dart
+============================================================
+
+import 'dart:convert';
+
+class Item {
+  final int? id;
+  final String name;
+  final List<String> imagePaths; // Updated to List
+  final double value;
+  final DateTime purchaseDate;
+
+  // New insurance-focused fields
+  final String? serialNumber;
+  final String? brand;
+  final String? model;
+  final String? notes;
+  final String? room;
+  final String? category;
+
+  Item({
+    this.id,
+    required this.name,
+    required this.imagePaths,
+    required this.value,
+    required this.purchaseDate,
+    this.serialNumber,
+    this.brand,
+    this.model,
+    this.notes,
+    this.room,
+    this.category,
+  });
+
+  // Convert an Item object into a Map to store in SQLite
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'name': name,
+      // Convert the List ["p1", "p2"] into a single String '["p1", "p2"]'
+      'imagePaths': jsonEncode(imagePaths),
+      'value': value,
+      'purchaseDate': purchaseDate.toIso8601String(),
+      'serialNumber': serialNumber,
+      'brand': brand,
+      'model': model,
+      'notes': notes,
+      'room': room,
+      'category': category,
+    };
+  }
+
+  // Create an Item object from a Map (fetched from SQLite)
+  factory Item.fromMap(Map<String, dynamic> map) {
+    return Item(
+      id: map['id'],
+      name: map['name'],
+      // Decode the JSON string back into a List<String>
+      imagePaths: List<String>.from(jsonDecode(map['imagePaths'] ?? '[]')),
+      value: map['value'],
+      purchaseDate: DateTime.parse(map['purchaseDate']),
+      serialNumber: map['serialNumber'],
+      brand: map['brand'],
+      model: map['model'],
+      notes: map['notes'],
+      room: map['room'],
+      category: map['category'],
+    );
+  }
+}
+
+============================================================
+PATH: .\lib\providers\inventory_provider.dart
+============================================================
+
+import 'package:flutter/material.dart';
+import '../models/item.dart';
+import '../data/database_helper.dart';
+
+class InventoryProvider with ChangeNotifier {
+  List<Item> _items = [];
+  bool _isLoading = false;
+
+  List<Item> get items => _items;
+  bool get isLoading => _isLoading;
+
+  String _searchQuery = '';
+
+  String get searchQuery => _searchQuery;
+
+  void setSearchQuery(String query) {
+    _searchQuery = query;
+    notifyListeners(); // This triggers the UI to rebuild with the filtered results
+  }
+
+  List<Item> get filteredItems {
+    if (_searchQuery.isEmpty) return _items;
+    return _items.where((item) {
+      final searchLower = _searchQuery.toLowerCase();
+      final nameMatch = item.name.toLowerCase().contains(searchLower);
+      final roomMatch = (item.room ?? '').toLowerCase().contains(searchLower);
+      final categoryMatch = (item.category ?? '').toLowerCase().contains(searchLower);
+      return nameMatch || roomMatch || categoryMatch;
+    }).toList();
+  }
+
+  // Calculates the total value for the AppBar chip
+  double get totalValue {
+    return _items.fold(0.0, (sum, item) => sum + item.value);
+  }
+
+  // Load all items from SQLite
+  Future<void> fetchItems() async {
+    _isLoading = true;
+    notifyListeners();
+
+    try {
+      _items = await DatabaseHelper.instance.readAllItems();
+    } catch (e) {
+      debugPrint('Error fetching items: $e');
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  // Add a new item and refresh the list
+  Future<void> addItem(Item item) async {
+    await DatabaseHelper.instance.create(item);
+    await fetchItems(); // Refresh the list from the source of truth
+  }
+
+  // Delete an item and refresh
+  Future<void> deleteItem(int id) async {
+    await DatabaseHelper.instance.delete(id);
+    await fetchItems();
+  }
+
+  int getItemsCountInRoom(String roomName) {
+    return _items.where((item) => item.room == roomName).length;
+  }
+
+  int getItemsCountInCategory(String categoryName) {
+    return _items.where((item) => item.category == categoryName).length;
+  }
+
+  Future<void> updateItem(Item item) async {
+    await DatabaseHelper.instance.update(item);
+    await fetchItems(); // Refresh the list so the UI shows the new data
+  }
+
+}
+
+============================================================
+PATH: .\lib\screens\add_item_screen.dart
+============================================================
+
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as path;
+import 'package:provider/provider.dart';
+import '../models/item.dart';
+import '../providers/inventory_provider.dart';
+import '../services/preferences_service.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
+
+class AddItemScreen extends StatefulWidget {
+  final Item? itemToEdit;
+  const AddItemScreen({super.key, this.itemToEdit});
+
+  @override
+  State<AddItemScreen> createState() => _AddItemScreenState();
+}
+
+class _AddItemScreenState extends State<AddItemScreen> {
+  final _formKey = GlobalKey<FormState>();
+  final _prefs = PreferencesService();
+
+  // Text Controllers
+  final _nameController = TextEditingController();
+  final _valueController = TextEditingController();
+  final _serialController = TextEditingController();
+  final _brandController = TextEditingController();
+  final _modelController = TextEditingController();
+  final _notesController = TextEditingController();
+
+  // State Management
+  List<File> _imageFiles = [];
+  List<String> _rooms = [];
+  List<String> _categories = [];
+  String? _selectedRoom;
+  String? _selectedCategory;
+  bool _isSaving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPreferences();
+
+    if (widget.itemToEdit != null) {
+      final item = widget.itemToEdit!;
+      _nameController.text = item.name;
+      _valueController.text = item.value.toString();
+      _serialController.text = item.serialNumber ?? '';
+      _brandController.text = item.brand ?? '';
+      _modelController.text = item.model ?? '';
+      _notesController.text = item.notes ?? '';
+      _selectedRoom = item.room;
+      _selectedCategory = item.category;
+      // Load existing images
+      _imageFiles = item.imagePaths.map((path) => File(path)).toList();
+    }
+
+  }
+
+  // Load the Room and Category lists from SharedPreferences
+  Future<void> _loadPreferences() async {
+    final r = await _prefs.getRooms();
+    final c = await _prefs.getCategories();
+    setState(() {
+      _rooms = r;
+      _categories = c;
+      if (_rooms.isNotEmpty) _selectedRoom = _rooms[0];
+      if (_categories.isNotEmpty) _selectedCategory = _categories[0];
+    });
+  }
+
+  // Pick image from Camera or Gallery
+  Future<void> _pickImage(ImageSource source) async {
+    final picker = ImagePicker();
+    final pickedFile = await picker.pickImage(source: source, imageQuality: 75);
+
+    if (pickedFile != null) {
+      setState(() {
+        _imageFiles.add(File(pickedFile.path));
+      });
+    }
+  }
+
+  Future<void> _saveItem() async {
+    // 1. Prevent double-saving if the button is tapped rapidly
+    if (_isSaving) return;
+
+    if (!_formKey.currentState!.validate()) return;
+
+    if (_imageFiles.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please add at least one photo for insurance proof.')),
+      );
+      return;
+    }
+
+    setState(() => _isSaving = true);
+
+    try {
+      final appDir = await getApplicationDocumentsDirectory();
+      List<String> savedPaths = [];
+
+      for (var file in _imageFiles) {
+        // Check if the file is already in our permanent storage (editing case)
+        if (file.path.contains(appDir.path)) {
+          savedPaths.add(file.path);
+        } else {
+          // It's a new file from the camera/gallery - Compress it!
+          final fileName = 'img_${DateTime.now().millisecondsSinceEpoch}_${path.basename(file.path)}';
+          final targetPath = '${appDir.path}/$fileName';
+
+          // COMPRESSION LOGIC
+          // This shrinks the file size while keeping high enough quality for insurance
+          var result = await FlutterImageCompress.compressAndGetFile(
+            file.absolute.path,
+            targetPath,
+            quality: 70,     // 70 is the sweet spot for file size vs clarity
+            minWidth: 1024,  // Enough resolution to read serial numbers
+            minHeight: 1024,
+          );
+
+          if (result != null) {
+            savedPaths.add(result.path);
+          } else {
+            // Fallback: If compression fails for some reason, just copy the original
+            final savedImage = await file.copy(targetPath);
+            savedPaths.add(savedImage.path);
+          }
+        }
+      }
+
+      final newItem = Item(
+        id: widget.itemToEdit?.id,
+        name: _nameController.text,
+        imagePaths: savedPaths,
+        value: double.tryParse(_valueController.text.replaceAll(',', '')) ?? 0.0,
+        purchaseDate: widget.itemToEdit?.purchaseDate ?? DateTime.now(),
+        serialNumber: _serialController.text,
+        brand: _brandController.text,
+        model: _modelController.text,
+        notes: _notesController.text,
+        room: _selectedRoom,
+        category: _selectedCategory,
+      );
+
+      final provider = Provider.of<InventoryProvider>(context, listen: false);
+
+      if (widget.itemToEdit == null) {
+        await provider.addItem(newItem);
+      } else {
+        await provider.updateItem(newItem);
+      }
+
+      if (mounted) Navigator.pop(context);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error saving: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Add Item Details')),
+      body: _isSaving
+          ? const Center(child: CircularProgressIndicator())
+          : SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            children: [
+              // --- PHOTO GALLERY (Horizontal List) ---
+              SizedBox(
+                height: 120,
+                child: ListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: _imageFiles.length + 1,
+                  itemBuilder: (ctx, i) {
+                    if (i == _imageFiles.length) {
+                      return _buildAddPhotoButton();
+                    }
+                    return _buildPhotoPreview(i);
+                  },
+                ),
+              ),
+              const SizedBox(height: 20),
+
+              // --- FORM FIELDS ---
+              _buildTextField(_nameController, 'Item Name', Icons.inventory_2),
+              _buildTextField(_valueController, 'Estimated Value (\$)', Icons.monetization_on, isNumber: true),
+
+              Row(
+                children: [
+                  Expanded(child: _buildDropdown('Room', _selectedRoom, _rooms, (val) => setState(() => _selectedRoom = val))),
+                  const SizedBox(width: 10),
+                  Expanded(child: _buildDropdown('Category', _selectedCategory, _categories, (val) => setState(() => _selectedCategory = val))),
+                ],
+              ),
+
+              Row(
+                children: [
+                  Expanded(child: _buildTextField(_brandController, 'Brand', Icons.factory)),
+                  const SizedBox(width: 10),
+                  Expanded(child: _buildTextField(_modelController, 'Model #', Icons.label_important)),
+                ],
+              ),
+
+              _buildTextField(_serialController, 'Serial Number', Icons.qr_code_scanner),
+              _buildTextField(_notesController, 'Notes / Description', Icons.description, maxLines: 3),
+
+              const SizedBox(height: 30),
+
+              ElevatedButton.icon(
+                onPressed: _saveItem,
+                icon: const Icon(Icons.check_circle),
+                label: const Text('SAVE TO INVENTORY', style: TextStyle(fontSize: 16)),
+                style: ElevatedButton.styleFrom(
+                  minimumSize: const Size(double.infinity, 55),
+                  backgroundColor: Colors.blueAccent,
+                  foregroundColor: Colors.white,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // --- UI HELPER METHODS ---
+
+  Widget _buildTextField(TextEditingController controller, String label, IconData icon, {bool isNumber = false, int maxLines = 1}) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: TextFormField(
+        controller: controller,
+        maxLines: maxLines,
+        keyboardType: isNumber ? const TextInputType.numberWithOptions(decimal: true) : TextInputType.text,
+        decoration: InputDecoration(
+          labelText: label,
+          prefixIcon: Icon(icon),
+          border: const OutlineInputBorder(),
+          contentPadding: const EdgeInsets.symmetric(vertical: 15),
+        ),
+        validator: (v) => v == null || v.isEmpty ? 'Please enter $label' : null,
+      ),
+    );
+  }
+
+  Widget _buildDropdown(String label, String? value, List<String> items, Function(String?) onChanged) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: DropdownButtonFormField<String>(
+        value: value,
+        decoration: InputDecoration(labelText: label, border: const OutlineInputBorder()),
+        items: items.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
+        onChanged: onChanged,
+      ),
+    );
+  }
+
+  Widget _buildPhotoPreview(int index) {
+    return Stack(
+      children: [
+        Container(
+          margin: const EdgeInsets.only(right: 12),
+          width: 100,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            image: DecorationImage(image: FileImage(_imageFiles[index]), fit: BoxFit.cover),
+            border: Border.all(color: Colors.blueAccent.withOpacity(0.3)),
+          ),
+        ),
+        Positioned(
+          right: 5,
+          top: -5,
+          child: GestureDetector(
+            onTap: () => setState(() => _imageFiles.removeAt(index)),
+            child: const CircleAvatar(
+              radius: 12,
+              backgroundColor: Colors.red,
+              child: Icon(Icons.close, size: 16, color: Colors.white),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildAddPhotoButton() {
+    return GestureDetector(
+      onTap: () => _showPickerOptions(),
+      child: Container(
+        width: 100,
+        decoration: BoxDecoration(
+          color: Colors.blueGrey[50],
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.blueGrey[200]!, style: BorderStyle.solid),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.add_a_photo, color: Colors.blueGrey[400]),
+            const SizedBox(height: 4),
+            Text("Add Photo", style: TextStyle(fontSize: 12, color: Colors.blueGrey[600])),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showPickerOptions() {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.camera_alt),
+              title: const Text('Take Photo with Camera'),
+              onTap: () { Navigator.pop(ctx); _pickImage(ImageSource.camera); },
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library),
+              title: const Text('Import from Gallery'),
+              onTap: () { Navigator.pop(ctx); _pickImage(ImageSource.gallery); },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+============================================================
+PATH: .\lib\screens\home_screen.dart
+============================================================
+
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:home_inventory/screens/add_item_screen.dart';
+import 'package:home_inventory/screens/item_detail_screen.dart';
+import 'package:home_inventory/screens/settings_screen.dart';
+import 'package:home_inventory/services/pdf_service.dart';
+import 'package:home_inventory/services/zip_service.dart';
+import 'package:provider/provider.dart';
+import 'package:intl/intl.dart';
+import '../providers/inventory_provider.dart';
+
+
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  bool _isSearching = false;
+  final TextEditingController _searchController = TextEditingController();
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  void _showExportMenu(BuildContext context) {
+    final provider = Provider.of<InventoryProvider>(context, listen: false);
+
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Wrap(
+          children: [
+            ListTile(
+              leading: const Icon(Icons.picture_as_pdf, color: Colors.red),
+              title: const Text('Export PDF Report'),
+              subtitle: const Text('Best for insurance claims'),
+              onTap: () {
+                Navigator.pop(ctx);
+                PdfService.generateInventoryReport(provider.items);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.folder_zip, color: Colors.orange),
+              title: const Text('Export ZIP Backup'),
+              subtitle: const Text('Includes all full-resolution photos'),
+              onTap: () {
+                Navigator.pop(ctx);
+                final allImages = provider.items.expand((item) => item.imagePaths).toList();
+                ZipService.createFullBackup(allImages);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // listen: false here because we use Consumer for the parts that need to rebuild
+    final inventoryProvider = Provider.of<InventoryProvider>(context, listen: false);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: _isSearching
+            ? TextField(
+          controller: _searchController,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: 'Search items, rooms...',
+            border: InputBorder.none,
+            hintStyle: TextStyle(color: Colors.blueGrey),
+          ),
+          style: const TextStyle(fontSize: 18),
+          onChanged: (val) => inventoryProvider.setSearchQuery(val),
+        )
+            : const Text('My Inventory'),
+        actions: [
+          // 1. Search Toggle Button
+          IconButton(
+            icon: Icon(_isSearching ? Icons.close : Icons.search),
+            onPressed: () {
+              setState(() {
+                _isSearching = !_isSearching;
+                if (!_isSearching) {
+                  _searchController.clear();
+                  inventoryProvider.setSearchQuery('');
+                }
+              });
+            },
+          ),
+          // 2. Export/Backup Button (Hidden during search for space)
+          if (!_isSearching)
+            IconButton(
+              icon: const Icon(Icons.share),
+              tooltip: 'Export Backup',
+              onPressed: () => _showExportMenu(context),
+            ),
+          // 3. Settings Button
+          if (!_isSearching)
+            IconButton(
+              icon: const Icon(Icons.settings),
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (context) => const SettingsScreen()),
+                );
+              },
+            ),
+          // 4. Total Value Pill
+          Padding(
+            padding: const EdgeInsets.only(right: 16.0, left: 8.0),
+            child: Center(
+              child: Consumer<InventoryProvider>(
+                builder: (context, provider, child) {
+                  final format = NumberFormat.simpleCurrency();
+                  return Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.green[100],
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      format.format(provider.totalValue),
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                        color: Colors.green[800],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          )
+        ],
+      ),
+      body: Consumer<InventoryProvider>(
+        builder: (context, provider, child) {
+          if (provider.isLoading) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          final displayItems = provider.filteredItems;
+
+          if (displayItems.isEmpty) {
+            return Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    _isSearching ? Icons.search_off : Icons.inventory_2_outlined,
+                    size: 80,
+                    color: Colors.grey[300],
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    _isSearching
+                        ? 'No items match your search.'
+                        : 'Your inventory is empty.\nTap the button below to add an item.',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.grey),
+                  ),
+                ],
+              ),
+            );
+          }
+
+          return ListView.builder(
+            itemCount: displayItems.length,
+            padding: const EdgeInsets.all(8),
+            itemBuilder: (context, index) {
+              final item = displayItems[index];
+              return Card(
+                elevation: 2,
+                margin: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+                child: ListTile(
+                  contentPadding: const EdgeInsets.all(10),
+                  leading: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: SizedBox(
+                      width: 60,
+                      height: 60,
+                      child: item.imagePaths.isNotEmpty
+                          ? Image.file(
+                        File(item.imagePaths[0]),
+                        fit: BoxFit.cover,
+                        cacheWidth: 150,
+                        // FIXED: Changed 'cite' back to 'ctx'
+                        errorBuilder: (ctx, err, stack) =>
+                        const Icon(Icons.broken_image, color: Colors.grey),
+                      )
+                          : Container(
+                        color: Colors.grey[200],
+                        child: const Icon(Icons.image_not_supported, color: Colors.grey),
+                      ),
+                    ),
+                  ),
+                  title: Text(
+                    item.name,
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  subtitle: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(item.room ?? 'Unassigned Room'),
+                      Text(
+                        DateFormat.yMMMd().format(item.purchaseDate),
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    ],
+                  ),
+                  trailing: Text(
+                    NumberFormat.simpleCurrency().format(item.value),
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 15,
+                      color: Colors.blueGrey,
+                    ),
+                  ),
+                  onTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (context) => ItemDetailScreen(item: item),
+                      ),
+                    );
+                  },
+                ),
+              );
+            },
+          );
+        },
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () {
+          Navigator.of(context).push(
+            MaterialPageRoute(builder: (context) => const AddItemScreen()),
+          );
+        },
+        icon: const Icon(Icons.add_a_photo),
+        label: const Text("Add Item"),
+      ),
+    );
+  }
+}
+
+============================================================
+PATH: .\lib\screens\item_detail_screen.dart
+============================================================
+
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import 'package:provider/provider.dart';
+import '../models/item.dart';
+import '../providers/inventory_provider.dart';
+import 'add_item_screen.dart'; // Required to navigate to Edit mode
+
+class ItemDetailScreen extends StatelessWidget {
+  final Item item;
+  const ItemDetailScreen({super.key, required this.item});
+
+  @override
+  Widget build(BuildContext context) {
+    final currencyFormat = NumberFormat.simpleCurrency();
+    final dateFormat = DateFormat.yMMMMd();
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Item Details'),
+        actions: [
+          // --- EDIT BUTTON ---
+          IconButton(
+            icon: const Icon(Icons.edit_outlined),
+            tooltip: 'Edit Item',
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (context) => AddItemScreen(itemToEdit: item),
+                ),
+              );
+            },
+          ),
+          // --- DELETE BUTTON ---
+          IconButton(
+            icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
+            onPressed: () => _confirmDelete(context),
+          ),
+        ],
+      ),
+      body: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // --- PHOTO GALLERY CAROUSEL ---
+            if (item.imagePaths.isNotEmpty)
+              SizedBox(
+                height: 350,
+                child: PageView.builder(
+                  itemCount: item.imagePaths.length,
+                  itemBuilder: (ctx, i) {
+                    return Container(
+                      width: MediaQuery.of(context).size.width,
+                      color: Colors.black,
+                      child: Image.file(
+                        File(item.imagePaths[i]),
+                        fit: BoxFit.contain,
+                      ),
+                    );
+                  },
+                ),
+              )
+            else
+              Container(
+                height: 250,
+                width: double.infinity,
+                color: Colors.grey[200],
+                child: const Icon(Icons.image_not_supported, size: 80, color: Colors.grey),
+              ),
+
+            if (item.imagePaths.length > 1)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8),
+                child: Center(child: Text('Swipe for more photos', style: TextStyle(color: Colors.grey, fontSize: 12))),
+              ),
+
+            Padding(
+              padding: const EdgeInsets.all(20.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Item Name and Price Header
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Expanded(
+                        child: Text(
+                          item.name,
+                          style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                      Text(
+                        currencyFormat.format(item.value),
+                        style: const TextStyle(fontSize: 24, color: Colors.green, fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+
+                  // Info Cards
+                  _buildSectionTitle('LOCATION & CATEGORY'),
+                  Row(
+                    children: [
+                      _buildChip(item.room ?? 'No Room', Icons.meeting_room),
+                      const SizedBox(width: 8),
+                      _buildChip(item.category ?? 'No Category', Icons.category),
+                    ],
+                  ),
+
+                  const SizedBox(height: 24),
+                  _buildSectionTitle('PRODUCT SPECIFICATIONS'),
+                  _buildDetailRow(Icons.business, 'Brand', item.brand),
+                  _buildDetailRow(Icons.label_important, 'Model', item.model),
+                  _buildDetailRow(Icons.qr_code, 'Serial #', item.serialNumber),
+                  _buildDetailRow(Icons.calendar_today, 'Added On', dateFormat.format(item.purchaseDate)),
+
+                  const SizedBox(height: 24),
+                  _buildSectionTitle('NOTES'),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.blueGrey[50],
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      (item.notes == null || item.notes!.isEmpty) ? 'No notes provided.' : item.notes!,
+                      style: const TextStyle(fontSize: 16, height: 1.5),
+                    ),
+                  ),
+                  const SizedBox(height: 40),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // --- UI HELPERS ---
+
+  Widget _buildSectionTitle(String title) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Text(
+        title,
+        style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.blueGrey[700], letterSpacing: 1.1),
+      ),
+    );
+  }
+
+  Widget _buildChip(String label, IconData icon) {
+    return Chip(
+      avatar: Icon(icon, size: 16, color: Colors.blueGrey),
+      label: Text(label),
+      backgroundColor: Colors.blueGrey[50],
+      side: BorderSide.none,
+    );
+  }
+
+  Widget _buildDetailRow(IconData icon, String label, String? value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8.0),
+      child: Row(
+        children: [
+          Icon(icon, size: 20, color: Colors.blueGrey[300]),
+          const SizedBox(width: 16),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label, style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+              Text(value ?? '--', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _confirmDelete(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Item?'),
+        content: const Text('This will permanently remove this record and all associated photos.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () {
+              Provider.of<InventoryProvider>(context, listen: false).deleteItem(item.id!);
+              Navigator.pop(ctx);
+              Navigator.pop(context);
+            },
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+============================================================
+PATH: .\lib\screens\settings_screen.dart
+============================================================
+
+import 'package:flutter/material.dart';
+import '../providers/inventory_provider.dart';
+import '../services/preferences_service.dart';
+import 'package:provider/provider.dart';
+
+class SettingsScreen extends StatefulWidget {
+  const SettingsScreen({super.key});
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  final _prefs = PreferencesService();
+  List<String> _rooms = [];
+  List<String> _categories = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshLists();
+  }
+
+  Future<void> _refreshLists() async {
+    final r = await _prefs.getRooms();
+    final c = await _prefs.getCategories();
+    setState(() {
+      _rooms = r;
+      _categories = c;
+    });
+  }
+
+  void _showAddDialog(bool isRoom) {
+    final controller = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(isRoom ? 'Add New Room' : 'Add New Category'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: InputDecoration(hintText: isRoom ? 'e.g. Attic' : 'e.g. Collectibles'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () async {
+              if (controller.text.isNotEmpty) {
+                isRoom
+                    ? await _prefs.addRoom(controller.text)
+                    : await _prefs.addCategory(controller.text);
+                _refreshLists();
+                Navigator.pop(ctx);
+              }
+            },
+            child: const Text('Add'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Manage Lists'),
+          bottom: const TabBar(
+            tabs: [
+              Tab(icon: Icon(Icons.room), text: 'Rooms'),
+              Tab(icon: Icon(Icons.category), text: 'Categories'),
+            ],
+          ),
+        ),
+        body: TabBarView(
+          children: [
+            _buildList(true, _rooms),
+            _buildList(false, _categories),
+          ],
+        ),
+        floatingActionButton: FloatingActionButton(
+          onPressed: () {
+            final tabIndex = DefaultTabController.of(context).index;
+            _showAddDialog(tabIndex == 0);
+          },
+          child: const Icon(Icons.add),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildList(bool isRoom, List<String> items) {
+    final inventory = Provider.of<InventoryProvider>(context, listen: false);
+
+    return ListView.builder(
+      itemCount: items.length,
+      itemBuilder: (ctx, i) {
+        final itemName = items[i];
+        return ListTile(
+          title: Text(itemName),
+          trailing: IconButton(
+            icon: const Icon(Icons.delete_outline, color: Colors.red),
+            onPressed: () async {
+              // Check if items are assigned to this room/category
+              int count = isRoom
+                  ? inventory.getItemsCountInRoom(itemName)
+                  : inventory.getItemsCountInCategory(itemName);
+
+              if (count > 0) {
+                // Show Warning Dialog
+                _showDeleteWarning(context, itemName, count, isRoom);
+              } else {
+                // Delete immediately if empty
+                isRoom
+                    ? await _prefs.removeRoom(itemName)
+                    : await _prefs.removeCategory(itemName);
+                _refreshLists();
+              }
+            },
+          ),
+        );
+      },
+    );
+  }
+
+  void _showDeleteWarning(BuildContext context, String name, int count, bool isRoom) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Warning: List Item in Use'),
+        content: Text(
+            'There are $count items currently assigned to the "${isRoom ? 'Room' : 'Category'}": $name.\n\n'
+                'If you delete this, existing items will keep the name, but you won\'t be able to select it for new items. Proceed?'
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () async {
+              isRoom
+                  ? await _prefs.removeRoom(name)
+                  : await _prefs.removeCategory(name);
+              _refreshLists();
+              if (mounted) Navigator.pop(ctx);
+            },
+            child: const Text('Delete Anyway', style: TextStyle(color: Colors.orange)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+============================================================
+PATH: .\lib\services\backup_service.dart
+============================================================
+
+import 'dart:io';
+import 'dart:convert';
+import 'package:archive/archive.dart';
+import 'package:path/path.dart' as path;
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../providers/inventory_provider.dart';
+
+class BackupService {
+  static Future<void> createAndShareBackup(BuildContext context) async {
+    try {
+      // 1. Fetch current items from the Provider
+      final items = Provider.of<InventoryProvider>(context, listen: false).items;
+
+      if (items.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No items to export!')),
+        );
+        return;
+      }
+
+      final archive = Archive();
+
+      // 2. Create the JSON data file
+      // This converts all item data (names, serials, notes) to a text file
+      final List<Map<String, dynamic>> jsonData = items.map((i) => i.toMap()).toList();
+      final String jsonString = jsonEncode(jsonData);
+      final List<int> jsonBytes = utf8.encode(jsonString);
+      archive.addFile(ArchiveFile('inventory_data.json', jsonBytes.length, jsonBytes));
+
+      // 3. Add ALL images to the ZIP
+      // We loop through every item, then every path in that item's imagePaths list
+      for (var item in items) {
+        for (var imagePath in item.imagePaths) {
+          final imageFile = File(imagePath);
+          if (await imageFile.exists()) {
+            final fileName = path.basename(imagePath);
+            final bytes = await imageFile.readAsBytes();
+            archive.addFile(ArchiveFile('images/$fileName', bytes.length, bytes));
+          }
+        }
+      }
+
+      // 4. Save the ZIP file to temporary storage
+      final zipEncoder = ZipEncoder();
+      final List<int>? zipBytes = zipEncoder.encode(archive);
+
+      if (zipBytes == null) return;
+
+      final tempDir = await getTemporaryDirectory();
+      final zipFile = File('${tempDir.path}/Home_Inventory_Backup.zip');
+      await zipFile.writeAsBytes(zipBytes);
+
+      // 5. Trigger the Share Sheet
+      final xFile = XFile(zipFile.path);
+      await Share.shareXFiles(
+        [xFile],
+        text: 'My Home Inventory Backup (Insurance Data)',
+      );
+
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Backup failed: $e')),
+      );
+    }
+  }
+}
+
+============================================================
+PATH: .\lib\services\pdf_service.dart
+============================================================
+
+import 'dart:io';
+import 'package:flutter/services.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
+import '../models/item.dart';
+import 'package:intl/intl.dart';
+
+class PdfService {
+  static Future<void> generateInventoryReport(List<Item> items) async {
+    final pdf = pw.Document();
+    final currencyFormat = NumberFormat.simpleCurrency();
+    final dateFormat = DateFormat.yMMMd();
+
+    // We use a MultiPage to handle long lists that span multiple pages
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        margin: const pw.EdgeInsets.all(32),
+        build: (context) => [
+          _buildHeader(items.length, items.fold(0.0, (sum, item) => sum + item.value)),
+          pw.SizedBox(height: 20),
+
+          // Generate a row for every item
+          ...items.map((item) => _buildItemRow(item, currencyFormat, dateFormat)).toList(),
+        ],
+      ),
+    );
+
+    await Printing.sharePdf(bytes: await pdf.save(), filename: 'inventory_report.pdf');
+  }
+
+  static pw.Widget _buildHeader(int count, double total) {
+    return pw.Column(
+      crossAxisAlignment: pw.CrossAxisAlignment.start,
+      children: [
+        pw.Text("Home Inventory Report", style: pw.TextStyle(fontSize: 24, fontWeight: pw.FontWeight.bold)),
+        pw.Text("Generated on: ${DateFormat.yMMMd().format(DateTime.now())}"),
+        pw.Divider(),
+        pw.Row(
+          mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+          children: [
+            pw.Text("Total Items: $count"),
+            pw.Text("Total Value: ${NumberFormat.simpleCurrency().format(total)}",
+                style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+          ],
+        ),
+      ],
+    );
+  }
+
+  static pw.Widget _buildItemRow(Item item, NumberFormat currency, DateFormat date) {
+    // We try to load the first image. If it fails or is empty, we show a placeholder.
+    pw.MemoryImage? imageProvider;
+    if (item.imagePaths.isNotEmpty) {
+      final file = File(item.imagePaths[0]);
+      if (file.existsSync()) {
+        imageProvider = pw.MemoryImage(file.readAsBytesSync());
+      }
+    }
+
+    return pw.Container(
+      margin: const pw.EdgeInsets.only(bottom: 10),
+      padding: const pw.EdgeInsets.all(8),
+      decoration: pw.BoxDecoration(
+        border: pw.Border.all(color: PdfColors.grey300),
+        borderRadius: pw.BorderRadius.circular(4),
+      ),
+      child: pw.Row(
+        crossAxisAlignment: pw.CrossAxisAlignment.start,
+        children: [
+          // Image Thumbnail
+          pw.Container(
+            width: 80,
+            height: 80,
+            child: imageProvider != null
+                ? pw.Image(imageProvider, fit: pw.BoxFit.cover)
+                : pw.Center(child: pw.Text("No Image", style: const pw.TextStyle(fontSize: 8))),
+          ),
+          pw.SizedBox(width: 15),
+          // Details
+          pw.Expanded(
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text(item.name, style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 14)),
+                pw.Text("Room: ${item.room ?? 'N/A'} | Category: ${item.category ?? 'N/A'}", style: const pw.TextStyle(fontSize: 10)),
+                if (item.serialNumber != null && item.serialNumber!.isNotEmpty)
+                  pw.Text("Serial: ${item.serialNumber}", style: const pw.TextStyle(fontSize: 10)),
+                pw.Text("Purchased: ${date.format(item.purchaseDate)}", style: const pw.TextStyle(fontSize: 10)),
+              ],
+            ),
+          ),
+          pw.Text(currency.format(item.value), style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+        ],
+      ),
+    );
+  }
+}
+
+============================================================
+PATH: .\lib\services\preferences_service.dart
+============================================================
+
+import 'package:shared_preferences/shared_preferences.dart';
+
+class PreferencesService {
+  static const _keyRooms = 'custom_rooms';
+  static const _keyCategories = 'custom_categories';
+
+  // Default lists if the user hasn't created any yet
+  static const List<String> _defaultRooms = ['Living Room', 'Kitchen', 'Bedroom', 'Garage', 'Office'];
+  static const List<String> _defaultCategories = ['Electronics', 'Furniture', 'Jewelry', 'Tools', 'Appliances'];
+
+  Future<List<String>> getRooms() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getStringList(_keyRooms) ?? _defaultRooms;
+  }
+
+  Future<void> addRoom(String room) async {
+    final prefs = await SharedPreferences.getInstance();
+    final rooms = await getRooms();
+    if (!rooms.contains(room)) {
+      rooms.add(room);
+      await prefs.setStringList(_keyRooms, rooms);
+    }
+  }
+
+  Future<List<String>> getCategories() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getStringList(_keyCategories) ?? _defaultCategories;
+  }
+
+  Future<void> addCategory(String category) async {
+    final prefs = await SharedPreferences.getInstance();
+    final categories = await getCategories();
+    if (!categories.contains(category)) {
+      categories.add(category);
+      await prefs.setStringList(_keyCategories, categories);
+    }
+  }
+
+  Future<void> removeRoom(String room) async {
+    final prefs = await SharedPreferences.getInstance();
+    final rooms = await getRooms();
+    rooms.remove(room);
+    await prefs.setStringList(_keyRooms, rooms);
+  }
+
+  Future<void> removeCategory(String category) async {
+    final prefs = await SharedPreferences.getInstance();
+    final categories = await getCategories();
+    categories.remove(category);
+    await prefs.setStringList(_keyCategories, categories);
+  }
+}
+
+============================================================
+PATH: .\lib\services\shared_preferences.dart
+============================================================
+
+import 'package:shared_preferences/shared_preferences.dart';
+
+class PreferencesService {
+  static const _keyRooms = 'custom_rooms';
+  static const _keyCategories = 'custom_categories';
+
+  // Default lists if the user hasn't created any yet
+  static const List<String> _defaultRooms = ['Living Room', 'Kitchen', 'Bedroom', 'Garage', 'Office'];
+  static const List<String> _defaultCategories = ['Electronics', 'Furniture', 'Jewelry', 'Tools', 'Appliances'];
+
+  Future<List<String>> getRooms() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getStringList(_keyRooms) ?? _defaultRooms;
+  }
+
+  Future<void> addRoom(String room) async {
+    final prefs = await SharedPreferences.getInstance();
+    final rooms = await getRooms();
+    if (!rooms.contains(room)) {
+      rooms.add(room);
+      await prefs.setStringList(_keyRooms, rooms);
+    }
+  }
+
+  Future<List<String>> getCategories() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getStringList(_keyCategories) ?? _defaultCategories;
+  }
+
+  Future<void> addCategory(String category) async {
+    final prefs = await SharedPreferences.getInstance();
+    final categories = await getCategories();
+    if (!categories.contains(category)) {
+      categories.add(category);
+      await prefs.setStringList(_keyCategories, categories);
+    }
+  }
+}
+
+============================================================
+PATH: .\lib\services\zip_service.dart
+============================================================
+
+import 'dart:io';
+import 'package:archive/archive_io.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:path/path.dart' as p;
+
+class ZipService {
+  static Future<void> createFullBackup(List<String> imagePaths) async {
+    final encoder = ZipFileEncoder();
+    final tempDir = await getTemporaryDirectory();
+    final zipPath = p.join(tempDir.path, "full_inventory_backup.zip");
+
+    encoder.create(zipPath);
+
+    // 1. Add all images
+    for (String path in imagePaths) {
+      final file = File(path);
+      if (await file.exists()) {
+        encoder.addFile(file);
+      }
+    }
+
+    // 2. Add the database file
+    final dbPath = await getDatabasesPath();
+    final dbFile = File(p.join(dbPath, 'inventory_v3.db'));
+    if (await dbFile.exists()) {
+      encoder.addFile(dbFile);
+    }
+
+    encoder.close();
+
+    await Share.shareXFiles([XFile(zipPath)], text: 'My Full Inventory Backup');
+  }
+
+  static Future<String> getDatabasesPath() async {
+    return p.join((await getApplicationDocumentsDirectory()).path, 'databases');
+  }
+}
+
+============================================================
+PATH: .\test\widget_test.dart
+============================================================
+
