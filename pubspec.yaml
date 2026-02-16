@@ -23,6 +23,7 @@ dependencies:
   pdf: ^3.10.7
   printing: ^5.11.1
   flutter_image_compress: ^2.3.0
+  mobile_scanner: ^5.2.0
 
 # Section 2: Tools for you (the developer) only
 dev_dependencies:

@@ -8,6 +8,8 @@ import '../models/item.dart';
 import '../providers/inventory_provider.dart';
 import '../services/preferences_service.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
+// Ensure you have added mobile_scanner to pubspec.yaml
+import '../widgets/barcode_scanner.dart';
 
 class AddItemScreen extends StatefulWidget {
   final Item? itemToEdit;
@@ -52,25 +54,24 @@ class _AddItemScreenState extends State<AddItemScreen> {
       _notesController.text = item.notes ?? '';
       _selectedRoom = item.room;
       _selectedCategory = item.category;
-      // Load existing images
       _imageFiles = item.imagePaths.map((path) => File(path)).toList();
     }
-
   }
 
-  // Load the Room and Category lists from SharedPreferences
   Future<void> _loadPreferences() async {
     final r = await _prefs.getRooms();
     final c = await _prefs.getCategories();
     setState(() {
       _rooms = r;
       _categories = c;
-      if (_rooms.isNotEmpty) _selectedRoom = _rooms[0];
-      if (_categories.isNotEmpty) _selectedCategory = _categories[0];
+      // Only set defaults if we aren't editing an item
+      if (widget.itemToEdit == null) {
+        if (_rooms.isNotEmpty) _selectedRoom = _rooms[0];
+        if (_categories.isNotEmpty) _selectedCategory = _categories[0];
+      }
     });
   }
 
-  // Pick image from Camera or Gallery
   Future<void> _pickImage(ImageSource source) async {
     final picker = ImagePicker();
     final pickedFile = await picker.pickImage(source: source, imageQuality: 75);
@@ -83,9 +84,7 @@ class _AddItemScreenState extends State<AddItemScreen> {
   }
 
   Future<void> _saveItem() async {
-    // 1. Prevent double-saving if the button is tapped rapidly
     if (_isSaving) return;
-
     if (!_formKey.currentState!.validate()) return;
 
     if (_imageFiles.isEmpty) {
@@ -102,28 +101,23 @@ class _AddItemScreenState extends State<AddItemScreen> {
       List<String> savedPaths = [];
 
       for (var file in _imageFiles) {
-        // Check if the file is already in our permanent storage (editing case)
         if (file.path.contains(appDir.path)) {
           savedPaths.add(file.path);
         } else {
-          // It's a new file from the camera/gallery - Compress it!
           final fileName = 'img_${DateTime.now().millisecondsSinceEpoch}_${path.basename(file.path)}';
           final targetPath = '${appDir.path}/$fileName';
 
-          // COMPRESSION LOGIC
-          // This shrinks the file size while keeping high enough quality for insurance
           var result = await FlutterImageCompress.compressAndGetFile(
             file.absolute.path,
             targetPath,
-            quality: 70,     // 70 is the sweet spot for file size vs clarity
-            minWidth: 1024,  // Enough resolution to read serial numbers
+            quality: 70,
+            minWidth: 1024,
             minHeight: 1024,
           );
 
           if (result != null) {
             savedPaths.add(result.path);
           } else {
-            // Fallback: If compression fails for some reason, just copy the original
             final savedImage = await file.copy(targetPath);
             savedPaths.add(savedImage.path);
           }
@@ -145,7 +139,6 @@ class _AddItemScreenState extends State<AddItemScreen> {
       );
 
       final provider = Provider.of<InventoryProvider>(context, listen: false);
-
       if (widget.itemToEdit == null) {
         await provider.addItem(newItem);
       } else {
@@ -165,7 +158,7 @@ class _AddItemScreenState extends State<AddItemScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Add Item Details')),
+      appBar: AppBar(title: Text(widget.itemToEdit == null ? 'Add Item Details' : 'Edit Item')),
       body: _isSaving
           ? const Center(child: CircularProgressIndicator())
           : SingleChildScrollView(
@@ -174,26 +167,20 @@ class _AddItemScreenState extends State<AddItemScreen> {
           key: _formKey,
           child: Column(
             children: [
-              // --- PHOTO GALLERY (Horizontal List) ---
               SizedBox(
                 height: 120,
                 child: ListView.builder(
                   scrollDirection: Axis.horizontal,
                   itemCount: _imageFiles.length + 1,
                   itemBuilder: (ctx, i) {
-                    if (i == _imageFiles.length) {
-                      return _buildAddPhotoButton();
-                    }
+                    if (i == _imageFiles.length) return _buildAddPhotoButton();
                     return _buildPhotoPreview(i);
                   },
                 ),
               ),
               const SizedBox(height: 20),
-
-              // --- FORM FIELDS ---
               _buildTextField(_nameController, 'Item Name', Icons.inventory_2),
               _buildTextField(_valueController, 'Estimated Value (\$)', Icons.monetization_on, isNumber: true),
-
               Row(
                 children: [
                   Expanded(child: _buildDropdown('Room', _selectedRoom, _rooms, (val) => setState(() => _selectedRoom = val))),
@@ -201,7 +188,6 @@ class _AddItemScreenState extends State<AddItemScreen> {
                   Expanded(child: _buildDropdown('Category', _selectedCategory, _categories, (val) => setState(() => _selectedCategory = val))),
                 ],
               ),
-
               Row(
                 children: [
                   Expanded(child: _buildTextField(_brandController, 'Brand', Icons.factory)),
@@ -209,16 +195,14 @@ class _AddItemScreenState extends State<AddItemScreen> {
                   Expanded(child: _buildTextField(_modelController, 'Model #', Icons.label_important)),
                 ],
               ),
-
-              _buildTextField(_serialController, 'Serial Number', Icons.qr_code_scanner),
+              // NEW: Serial Number with Scanner button
+              _buildScanTextField(_serialController, 'Serial Number / UPC', Icons.qr_code_scanner),
               _buildTextField(_notesController, 'Notes / Description', Icons.description, maxLines: 3),
-
               const SizedBox(height: 30),
-
               ElevatedButton.icon(
                 onPressed: _saveItem,
                 icon: const Icon(Icons.check_circle),
-                label: const Text('SAVE TO INVENTORY', style: TextStyle(fontSize: 16)),
+                label: Text(widget.itemToEdit == null ? 'SAVE TO INVENTORY' : 'UPDATE ITEM', style: const TextStyle(fontSize: 16)),
                 style: ElevatedButton.styleFrom(
                   minimumSize: const Size(double.infinity, 55),
                   backgroundColor: Colors.blueAccent,
@@ -232,7 +216,34 @@ class _AddItemScreenState extends State<AddItemScreen> {
     );
   }
 
-  // --- UI HELPER METHODS ---
+  // --- UI HELPERS ---
+
+  Widget _buildScanTextField(TextEditingController controller, String label, IconData icon) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: TextFormField(
+        controller: controller,
+        decoration: InputDecoration(
+          labelText: label,
+          prefixIcon: Icon(icon),
+          suffixIcon: IconButton(
+            icon: const Icon(Icons.camera_alt, color: Colors.blueAccent),
+            tooltip: 'Scan Barcode',
+            onPressed: () async {
+              final String? scannedCode = await Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const BarcodeScannerWidget()),
+              );
+              if (scannedCode != null) {
+                setState(() => controller.text = scannedCode);
+              }
+            },
+          ),
+          border: const OutlineInputBorder(),
+        ),
+      ),
+    );
+  }
 
   Widget _buildTextField(TextEditingController controller, String label, IconData icon, {bool isNumber = false, int maxLines = 1}) {
     return Padding(
@@ -245,7 +256,6 @@ class _AddItemScreenState extends State<AddItemScreen> {
           labelText: label,
           prefixIcon: Icon(icon),
           border: const OutlineInputBorder(),
-          contentPadding: const EdgeInsets.symmetric(vertical: 15),
         ),
         validator: (v) => v == null || v.isEmpty ? 'Please enter $label' : null,
       ),
