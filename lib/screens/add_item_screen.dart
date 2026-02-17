@@ -6,7 +6,6 @@ import 'package:path/path.dart' as path;
 import 'package:provider/provider.dart';
 import '../models/item.dart';
 import '../providers/inventory_provider.dart';
-import '../services/preferences_service.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import '../widgets/barcode_scanner.dart';
 
@@ -20,7 +19,6 @@ class AddItemScreen extends StatefulWidget {
 
 class _AddItemScreenState extends State<AddItemScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _prefs = PreferencesService();
 
   // Text Controllers
   final _nameController = TextEditingController();
@@ -32,8 +30,6 @@ class _AddItemScreenState extends State<AddItemScreen> {
 
   // State Management
   List<File> _imageFiles = [];
-  List<String> _rooms = [];
-  List<String> _categories = [];
   String? _selectedRoom;
   String? _selectedCategory;
   bool _isSaving = false;
@@ -42,7 +38,6 @@ class _AddItemScreenState extends State<AddItemScreen> {
   void initState() {
     super.initState();
 
-    // 1. If editing, populate values immediately to avoid UI flickering
     if (widget.itemToEdit != null) {
       final item = widget.itemToEdit!;
       _nameController.text = item.name;
@@ -54,15 +49,16 @@ class _AddItemScreenState extends State<AddItemScreen> {
       _selectedRoom = item.room;
       _selectedCategory = item.category;
       _imageFiles = item.imagePaths.map((path) => File(path)).toList();
+    } else {
+      // Default selections from Provider
+      final provider = Provider.of<InventoryProvider>(context, listen: false);
+      if (provider.rooms.isNotEmpty) _selectedRoom = provider.rooms[0];
+      if (provider.categories.isNotEmpty) _selectedCategory = provider.categories[0];
     }
-
-    // 2. Load preferences asynchronously
-    _loadPreferences();
   }
 
   @override
   void dispose() {
-    // FIX (Point 1): Prevent memory leaks by disposing all controllers
     _nameController.dispose();
     _valueController.dispose();
     _serialController.dispose();
@@ -70,26 +66,6 @@ class _AddItemScreenState extends State<AddItemScreen> {
     _modelController.dispose();
     _notesController.dispose();
     super.dispose();
-  }
-
-  Future<void> _loadPreferences() async {
-    final r = await _prefs.getRooms();
-    final c = await _prefs.getCategories();
-
-    if (!mounted) return;
-
-    setState(() {
-      _rooms = r;
-      _categories = c;
-
-      // FIX (Point 2): Prevent clobbering. Only set defaults if selection is null.
-      if (_selectedRoom == null && _rooms.isNotEmpty) {
-        _selectedRoom = _rooms[0];
-      }
-      if (_selectedCategory == null && _categories.isNotEmpty) {
-        _selectedCategory = _categories[0];
-      }
-    });
   }
 
   Future<void> _pickImage(ImageSource source) async {
@@ -109,7 +85,7 @@ class _AddItemScreenState extends State<AddItemScreen> {
 
     if (_imageFiles.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please add at least one photo for insurance proof.')),
+        const SnackBar(content: Text('Please add at least one photo.')),
       );
       return;
     }
@@ -121,7 +97,6 @@ class _AddItemScreenState extends State<AddItemScreen> {
       List<String> savedPaths = [];
 
       for (var file in _imageFiles) {
-        // If file is already internal (Editing), don't re-compress
         if (file.path.contains(appDir.path)) {
           savedPaths.add(file.path);
         } else {
@@ -160,17 +135,11 @@ class _AddItemScreenState extends State<AddItemScreen> {
       );
 
       final provider = Provider.of<InventoryProvider>(context, listen: false);
-      if (widget.itemToEdit == null) {
-        await provider.addItem(newItem);
-      } else {
-        await provider.updateItem(newItem);
-      }
+      widget.itemToEdit == null ? await provider.addItem(newItem) : await provider.updateItem(newItem);
 
       if (mounted) Navigator.pop(context);
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error saving: $e')));
-      }
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error saving: $e')));
     } finally {
       if (mounted) setState(() => _isSaving = false);
     }
@@ -178,8 +147,9 @@ class _AddItemScreenState extends State<AddItemScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // FIX (Point 15): Access the app theme for consistent UI colors
     final theme = Theme.of(context);
+    // Observe the provider for the dynamic lists
+    final provider = context.watch<InventoryProvider>();
 
     return Scaffold(
       appBar: AppBar(title: Text(widget.itemToEdit == null ? 'Add Item Details' : 'Edit Item')),
@@ -191,7 +161,6 @@ class _AddItemScreenState extends State<AddItemScreen> {
           key: _formKey,
           child: Column(
             children: [
-              // PHOTO GALLERY
               SizedBox(
                 height: 120,
                 child: ListView.builder(
@@ -204,18 +173,15 @@ class _AddItemScreenState extends State<AddItemScreen> {
                 ),
               ),
               const SizedBox(height: 20),
-
               _buildTextField(_nameController, 'Item Name', Icons.inventory_2),
               _buildTextField(_valueController, 'Estimated Value (\$)', Icons.monetization_on, isNumber: true),
-
               Row(
                 children: [
-                  Expanded(child: _buildDropdown('Room', _selectedRoom, _rooms, (val) => setState(() => _selectedRoom = val))),
+                  Expanded(child: _buildDropdown('Room', _selectedRoom, provider.rooms, (val) => setState(() => _selectedRoom = val))),
                   const SizedBox(width: 10),
-                  Expanded(child: _buildDropdown('Category', _selectedCategory, _categories, (val) => setState(() => _selectedCategory = val))),
+                  Expanded(child: _buildDropdown('Category', _selectedCategory, provider.categories, (val) => setState(() => _selectedCategory = val))),
                 ],
               ),
-
               Row(
                 children: [
                   Expanded(child: _buildTextField(_brandController, 'Brand', Icons.factory)),
@@ -223,19 +189,15 @@ class _AddItemScreenState extends State<AddItemScreen> {
                   Expanded(child: _buildTextField(_modelController, 'Model #', Icons.label_important)),
                 ],
               ),
-
               _buildScanTextField(_serialController, 'Serial Number / UPC', Icons.qr_code_scanner),
               _buildTextField(_notesController, 'Notes / Description', Icons.description, maxLines: 3),
-
               const SizedBox(height: 30),
-
               ElevatedButton.icon(
                 onPressed: _saveItem,
                 icon: const Icon(Icons.check_circle),
                 label: Text(widget.itemToEdit == null ? 'SAVE TO INVENTORY' : 'UPDATE ITEM', style: const TextStyle(fontSize: 16)),
                 style: ElevatedButton.styleFrom(
                   minimumSize: const Size(double.infinity, 55),
-                  // Using theme colors
                   backgroundColor: theme.colorScheme.primary,
                   foregroundColor: theme.colorScheme.onPrimary,
                 ),
@@ -259,15 +221,12 @@ class _AddItemScreenState extends State<AddItemScreen> {
           prefixIcon: Icon(icon),
           suffixIcon: IconButton(
             icon: Icon(Icons.camera_alt, color: Theme.of(context).colorScheme.primary),
-            tooltip: 'Scan Barcode',
             onPressed: () async {
               final String? scannedCode = await Navigator.push(
                 context,
                 MaterialPageRoute(builder: (context) => const BarcodeScannerWidget()),
               );
-              if (scannedCode != null && mounted) {
-                setState(() => controller.text = scannedCode);
-              }
+              if (scannedCode != null && mounted) setState(() => controller.text = scannedCode);
             },
           ),
           border: const OutlineInputBorder(),
@@ -283,21 +242,20 @@ class _AddItemScreenState extends State<AddItemScreen> {
         controller: controller,
         maxLines: maxLines,
         keyboardType: isNumber ? const TextInputType.numberWithOptions(decimal: true) : TextInputType.text,
-        decoration: InputDecoration(
-          labelText: label,
-          prefixIcon: Icon(icon),
-          border: const OutlineInputBorder(),
-        ),
+        decoration: InputDecoration(labelText: label, prefixIcon: Icon(icon), border: const OutlineInputBorder()),
         validator: (v) => v == null || v.isEmpty ? 'Please enter $label' : null,
       ),
     );
   }
 
   Widget _buildDropdown(String label, String? value, List<String> items, Function(String?) onChanged) {
+    // Ensure the current value is actually in the items list to prevent crash
+    final safeValue = items.contains(value) ? value : (items.isNotEmpty ? items[0] : null);
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: DropdownButtonFormField<String>(
-        value: value,
+        value: safeValue,
         decoration: InputDecoration(labelText: label, border: const OutlineInputBorder()),
         items: items.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
         onChanged: onChanged,

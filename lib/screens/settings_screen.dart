@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import '../providers/inventory_provider.dart';
-import '../services/preferences_service.dart';
 import 'package:provider/provider.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -11,32 +10,10 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  final _prefs = PreferencesService();
-  List<String> _rooms = [];
-  List<String> _categories = [];
-
-  @override
-  void initState() {
-    super.initState();
-    _refreshLists();
-  }
-
-  Future<void> _refreshLists() async {
-    final r = await _prefs.getRooms();
-    final c = await _prefs.getCategories();
-    if (mounted) {
-      setState(() {
-        _rooms = r;
-        _categories = c;
-      });
-    }
-  }
-
-  // --- LOGIC ---
+  // Logic is now delegated to the Provider for professional state management
 
   void _showAddDialog(bool isRoom) {
     final controller = TextEditingController();
-    final colorScheme = Theme.of(context).colorScheme;
 
     showDialog(
       context: context,
@@ -57,8 +34,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onPressed: () async {
               if (controller.text.trim().isNotEmpty) {
                 final text = controller.text.trim();
-                isRoom ? await _prefs.saveRooms([..._rooms, text]) : await _prefs.saveCategories([..._categories, text]);
-                _refreshLists();
+                final provider = Provider.of<InventoryProvider>(context, listen: false);
+
+                isRoom ? await provider.addRoom(text) : await provider.addCategory(text);
+
                 if (mounted) Navigator.pop(ctx);
               }
             },
@@ -69,33 +48,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  void _handleDelete(bool isRoom, String itemName) async {
-    final inventory = Provider.of<InventoryProvider>(context, listen: false);
-
-    // Using the count logic we discussed
+  void _handleDelete(bool isRoom, String itemName) {
+    final provider = Provider.of<InventoryProvider>(context, listen: false);
     int count = isRoom
-        ? inventory.items.where((i) => i.room == itemName).length
-        : inventory.items.where((i) => i.category == itemName).length;
+        ? provider.getItemsCountInRoom(itemName)
+        : provider.getItemsCountInCategory(itemName);
 
     if (count > 0) {
       _showDeleteWarning(itemName, count, isRoom);
     } else {
-      _performDelete(isRoom, itemName);
+      isRoom ? provider.removeRoom(itemName) : provider.removeCategory(itemName);
     }
   }
-
-  Future<void> _performDelete(bool isRoom, String itemName) async {
-    if (isRoom) {
-      _rooms.remove(itemName);
-      await _prefs.saveRooms(_rooms);
-    } else {
-      _categories.remove(itemName);
-      await _prefs.saveCategories(_categories);
-    }
-    _refreshLists();
-  }
-
-  // --- UI COMPONENTS ---
 
   void _showDeleteWarning(String name, int count, bool isRoom) {
     final colorScheme = Theme.of(context).colorScheme;
@@ -121,7 +85,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           TextButton(
             onPressed: () {
-              _performDelete(isRoom, name);
+              final provider = Provider.of<InventoryProvider>(context, listen: false);
+              isRoom ? provider.removeRoom(name) : provider.removeCategory(name);
               Navigator.pop(ctx);
             },
             child: Text('DELETE ANYWAY', style: TextStyle(color: colorScheme.error)),
@@ -133,6 +98,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // We listen to the provider here so the UI rebuilds when lists change
+    final provider = context.watch<InventoryProvider>();
+
     return DefaultTabController(
       length: 2,
       child: Scaffold(
@@ -147,8 +115,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
         body: TabBarView(
           children: [
-            _buildList(true, _rooms),
-            _buildList(false, _categories),
+            _buildList(true, provider.rooms),
+            _buildList(false, provider.categories),
           ],
         ),
         floatingActionButton: Builder(
@@ -167,12 +135,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Widget _buildList(bool isRoom, List<String> items) {
     if (items.isEmpty) {
-      return Center(
-        child: Text(
-          'No ${isRoom ? 'rooms' : 'categories'} added yet.',
-          style: const TextStyle(color: Colors.grey),
-        ),
-      );
+      return const Center(child: Text('No items added yet.', style: TextStyle(color: Colors.grey)));
     }
 
     return ListView.separated(
