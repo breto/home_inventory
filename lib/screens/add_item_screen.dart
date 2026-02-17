@@ -4,6 +4,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
 import 'package:provider/provider.dart';
+import 'package:intl/intl.dart';
 import '../models/item.dart';
 import '../providers/inventory_provider.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
@@ -20,7 +21,6 @@ class AddItemScreen extends StatefulWidget {
 class _AddItemScreenState extends State<AddItemScreen> {
   final _formKey = GlobalKey<FormState>();
 
-  // Text Controllers
   final _nameController = TextEditingController();
   final _valueController = TextEditingController();
   final _serialController = TextEditingController();
@@ -28,32 +28,31 @@ class _AddItemScreenState extends State<AddItemScreen> {
   final _modelController = TextEditingController();
   final _notesController = TextEditingController();
 
-  // State Management
   List<File> _imageFiles = [];
+  List<int> _receiptIndices = [];
   String? _selectedRoom;
   String? _selectedCategory;
+  DateTime _purchaseDate = DateTime.now();
+  DateTime? _warrantyExpiry;
   bool _isSaving = false;
 
   @override
   void initState() {
     super.initState();
-
     if (widget.itemToEdit != null) {
       final item = widget.itemToEdit!;
       _nameController.text = item.name;
-      _valueController.text = item.value.toString();
+      _valueController.text = item.value == 0.0 ? '' : item.value.toString();
       _serialController.text = item.serialNumber ?? '';
       _brandController.text = item.brand ?? '';
       _modelController.text = item.model ?? '';
       _notesController.text = item.notes ?? '';
       _selectedRoom = item.room;
       _selectedCategory = item.category;
+      _purchaseDate = item.purchaseDate;
+      _warrantyExpiry = item.warrantyExpiry;
+      _receiptIndices = List.from(item.receiptIndices);
       _imageFiles = item.imagePaths.map((path) => File(path)).toList();
-    } else {
-      // Default selections from Provider
-      final provider = Provider.of<InventoryProvider>(context, listen: false);
-      if (provider.rooms.isNotEmpty) _selectedRoom = provider.rooms[0];
-      if (provider.categories.isNotEmpty) _selectedCategory = provider.categories[0];
     }
   }
 
@@ -71,27 +70,34 @@ class _AddItemScreenState extends State<AddItemScreen> {
   Future<void> _pickImage(ImageSource source) async {
     final picker = ImagePicker();
     final pickedFile = await picker.pickImage(source: source, imageQuality: 75);
-
     if (pickedFile != null) {
+      setState(() => _imageFiles.add(File(pickedFile.path)));
+    }
+  }
+
+  Future<void> _selectDate(BuildContext context, bool isPurchaseDate) async {
+    final DateTime? picked = await showDatePicker(
+      context: context,
+      initialDate: isPurchaseDate ? _purchaseDate : (_warrantyExpiry ?? DateTime.now()),
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2101),
+    );
+    if (picked != null) {
       setState(() {
-        _imageFiles.add(File(pickedFile.path));
+        if (isPurchaseDate) _purchaseDate = picked;
+        else _warrantyExpiry = picked;
       });
     }
   }
 
   Future<void> _saveItem() async {
-    if (_isSaving) return;
-    if (!_formKey.currentState!.validate()) return;
-
+    if (_isSaving || !_formKey.currentState!.validate()) return;
     if (_imageFiles.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please add at least one photo.')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('At least one photo is required.')));
       return;
     }
 
     setState(() => _isSaving = true);
-
     try {
       final appDir = await getApplicationDocumentsDirectory();
       List<String> savedPaths = [];
@@ -102,44 +108,34 @@ class _AddItemScreenState extends State<AddItemScreen> {
         } else {
           final fileName = 'img_${DateTime.now().millisecondsSinceEpoch}_${path.basename(file.path)}';
           final targetPath = '${appDir.path}/$fileName';
-
           var result = await FlutterImageCompress.compressAndGetFile(
-            file.absolute.path,
-            targetPath,
-            quality: 70,
-            minWidth: 1024,
-            minHeight: 1024,
+            file.absolute.path, targetPath, quality: 70, minWidth: 1024, minHeight: 1024,
           );
-
-          if (result != null) {
-            savedPaths.add(result.path);
-          } else {
-            final savedImage = await file.copy(targetPath);
-            savedPaths.add(savedImage.path);
-          }
+          savedPaths.add(result?.path ?? (await file.copy(targetPath)).path);
         }
       }
 
       final newItem = Item(
         id: widget.itemToEdit?.id,
-        name: _nameController.text,
+        name: _nameController.text.trim(),
         imagePaths: savedPaths,
         value: double.tryParse(_valueController.text.replaceAll(',', '')) ?? 0.0,
-        purchaseDate: widget.itemToEdit?.purchaseDate ?? DateTime.now(),
-        serialNumber: _serialController.text,
-        brand: _brandController.text,
-        model: _modelController.text,
-        notes: _notesController.text,
-        room: _selectedRoom,
-        category: _selectedCategory,
+        purchaseDate: _purchaseDate,
+        warrantyExpiry: _warrantyExpiry,
+        serialNumber: _serialController.text.isEmpty ? null : _serialController.text,
+        brand: _brandController.text.isEmpty ? null : _brandController.text,
+        model: _modelController.text.isEmpty ? null : _modelController.text,
+        notes: _notesController.text.isEmpty ? null : _notesController.text,
+        room: (_selectedRoom == "None" || _selectedRoom == null) ? null : _selectedRoom,
+        category: (_selectedCategory == "None" || _selectedCategory == null) ? null : _selectedCategory,
+        receiptIndices: _receiptIndices,
       );
 
       final provider = Provider.of<InventoryProvider>(context, listen: false);
       widget.itemToEdit == null ? await provider.addItem(newItem) : await provider.updateItem(newItem);
-
       if (mounted) Navigator.pop(context);
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error saving: $e')));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
     } finally {
       if (mounted) setState(() => _isSaving = false);
     }
@@ -148,60 +144,52 @@ class _AddItemScreenState extends State<AddItemScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    // Observe the provider for the dynamic lists
     final provider = context.watch<InventoryProvider>();
+    final roomOptions = ["None", ...provider.rooms];
+    final categoryOptions = ["None", ...provider.categories];
 
     return Scaffold(
-      appBar: AppBar(title: Text(widget.itemToEdit == null ? 'Add Item Details' : 'Edit Item')),
-      body: _isSaving
-          ? const Center(child: CircularProgressIndicator())
-          : SingleChildScrollView(
+      appBar: AppBar(title: Text(widget.itemToEdit == null ? 'Add Item' : 'Edit Item')),
+      body: _isSaving ? const Center(child: CircularProgressIndicator()) : SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Form(
           key: _formKey,
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              SizedBox(
-                height: 120,
-                child: ListView.builder(
-                  scrollDirection: Axis.horizontal,
-                  itemCount: _imageFiles.length + 1,
-                  itemBuilder: (ctx, i) {
-                    if (i == _imageFiles.length) return _buildAddPhotoButton();
-                    return _buildPhotoPreview(i);
-                  },
-                ),
-              ),
-              const SizedBox(height: 20),
-              _buildTextField(_nameController, 'Item Name', Icons.inventory_2),
+              _buildPhotoHeader(),
+              _buildPhotoGallery(theme),
+              const SizedBox(height: 24),
+              _buildTextField(_nameController, 'Item Name', Icons.inventory_2, isRequired: true),
               _buildTextField(_valueController, 'Estimated Value (\$)', Icons.monetization_on, isNumber: true),
+
               Row(
                 children: [
-                  Expanded(child: _buildDropdown('Room', _selectedRoom, provider.rooms, (val) => setState(() => _selectedRoom = val))),
-                  const SizedBox(width: 10),
-                  Expanded(child: _buildDropdown('Category', _selectedCategory, provider.categories, (val) => setState(() => _selectedCategory = val))),
+                  Expanded(child: _buildDatePicker('Purchase Date', _purchaseDate, () => _selectDate(context, true))),
+                  const SizedBox(width: 12),
+                  Expanded(child: _buildDatePicker('Warranty Until', _warrantyExpiry, () => _selectDate(context, false), isOptional: true)),
                 ],
               ),
+
+              Row(
+                children: [
+                  Expanded(child: _buildDropdown('Room', _selectedRoom, roomOptions, (val) => setState(() => _selectedRoom = val))),
+                  const SizedBox(width: 12),
+                  Expanded(child: _buildDropdown('Category', _selectedCategory, categoryOptions, (val) => setState(() => _selectedCategory = val))),
+                ],
+              ),
+
               Row(
                 children: [
                   Expanded(child: _buildTextField(_brandController, 'Brand', Icons.factory)),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: 12),
                   Expanded(child: _buildTextField(_modelController, 'Model #', Icons.label_important)),
                 ],
               ),
               _buildScanTextField(_serialController, 'Serial Number / UPC', Icons.qr_code_scanner),
               _buildTextField(_notesController, 'Notes / Description', Icons.description, maxLines: 3),
-              const SizedBox(height: 30),
-              ElevatedButton.icon(
-                onPressed: _saveItem,
-                icon: const Icon(Icons.check_circle),
-                label: Text(widget.itemToEdit == null ? 'SAVE TO INVENTORY' : 'UPDATE ITEM', style: const TextStyle(fontSize: 16)),
-                style: ElevatedButton.styleFrom(
-                  minimumSize: const Size(double.infinity, 55),
-                  backgroundColor: theme.colorScheme.primary,
-                  foregroundColor: theme.colorScheme.onPrimary,
-                ),
-              ),
+              const SizedBox(height: 32),
+              _buildSaveButton(theme),
             ],
           ),
         ),
@@ -209,107 +197,161 @@ class _AddItemScreenState extends State<AddItemScreen> {
     );
   }
 
-  // --- UI HELPERS ---
+  // --- UI COMPONENTS ---
 
-  Widget _buildScanTextField(TextEditingController controller, String label, IconData icon) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: TextFormField(
-        controller: controller,
-        decoration: InputDecoration(
-          labelText: label,
-          prefixIcon: Icon(icon),
-          suffixIcon: IconButton(
-            icon: Icon(Icons.camera_alt, color: Theme.of(context).colorScheme.primary),
-            onPressed: () async {
-              final String? scannedCode = await Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const BarcodeScannerWidget()),
-              );
-              if (scannedCode != null && mounted) setState(() => controller.text = scannedCode);
-            },
+  Widget _buildPhotoHeader() {
+    return const Padding(
+      padding: EdgeInsets.only(bottom: 8),
+      child: Text("Photos & Receipts *", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+    );
+  }
+
+  Widget _buildPhotoGallery(ThemeData theme) {
+    return SizedBox(
+      height: 140,
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        itemCount: _imageFiles.length + 1,
+        itemBuilder: (ctx, i) {
+          if (i == _imageFiles.length) return _buildAddPhotoButton(theme);
+          bool isReceipt = _receiptIndices.contains(i);
+          return _buildPhotoPreview(i, isReceipt);
+        },
+      ),
+    );
+  }
+
+  Widget _buildPhotoPreview(int index, bool isReceipt) {
+    return Stack(
+      children: [
+        Container(
+          margin: const EdgeInsets.only(right: 12, top: 10),
+          width: 110,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            image: DecorationImage(image: FileImage(_imageFiles[index]), fit: BoxFit.cover),
+            border: Border.all(color: isReceipt ? Colors.green : Colors.grey.shade300, width: 2),
           ),
-          border: const OutlineInputBorder(),
+        ),
+        // Delete Button
+        Positioned(right: 0, top: 0, child: GestureDetector(
+          onTap: () => setState(() {
+            _imageFiles.removeAt(index);
+            _receiptIndices.remove(index);
+            _receiptIndices = _receiptIndices.map((e) => e > index ? e - 1 : e).toList();
+          }),
+          child: const CircleAvatar(radius: 12, backgroundColor: Colors.red, child: Icon(Icons.close, size: 16, color: Colors.white)),
+        )),
+        // Receipt Toggle
+        Positioned(left: 5, bottom: 5, child: GestureDetector(
+          onTap: () => setState(() => _receiptIndices.contains(index) ? _receiptIndices.remove(index) : _receiptIndices.add(index)),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(color: isReceipt ? Colors.green : Colors.black54, borderRadius: BorderRadius.circular(8)),
+            child: Row(children: [
+              Icon(Icons.receipt_long, size: 12, color: Colors.white),
+              const SizedBox(width: 4),
+              Text(isReceipt ? "Receipt" : "Tag Receipt", style: const TextStyle(color: Colors.white, fontSize: 10)),
+            ]),
+          ),
+        )),
+      ],
+    );
+  }
+
+  Widget _buildDatePicker(String label, DateTime? date, VoidCallback onTap, {bool isOptional = false}) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: InkWell(
+        onTap: onTap,
+        child: InputDecorator(
+          decoration: InputDecoration(labelText: isOptional ? '$label (Optional)' : label, border: const OutlineInputBorder()),
+          child: Text(date == null ? 'Select Date' : DateFormat('MMM d, yyyy').format(date)),
         ),
       ),
     );
   }
 
-  Widget _buildTextField(TextEditingController controller, String label, IconData icon, {bool isNumber = false, int maxLines = 1}) {
+  // (Remaining helpers: _buildTextField, _buildDropdown, _buildScanTextField, _buildAddPhotoButton, _showPickerOptions are kept from previous versions)
+  // [Truncated for brevity, but include identical logic to the previous full file gen]
+
+  Widget _buildSaveButton(ThemeData theme) {
+    return ElevatedButton.icon(
+      onPressed: _saveItem,
+      icon: const Icon(Icons.check_circle),
+      label: const Text('SAVE TO INVENTORY', style: TextStyle(fontWeight: FontWeight.bold)),
+      style: ElevatedButton.styleFrom(
+        minimumSize: const Size(double.infinity, 60),
+        backgroundColor: theme.colorScheme.primary,
+        foregroundColor: theme.colorScheme.onPrimary,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+    );
+  }
+
+  Widget _buildTextField(TextEditingController controller, String label, IconData icon, {bool isNumber = false, int maxLines = 1, bool isRequired = false}) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.only(bottom: 16),
       child: TextFormField(
         controller: controller,
         maxLines: maxLines,
         keyboardType: isNumber ? const TextInputType.numberWithOptions(decimal: true) : TextInputType.text,
-        decoration: InputDecoration(labelText: label, prefixIcon: Icon(icon), border: const OutlineInputBorder()),
-        validator: (v) => v == null || v.isEmpty ? 'Please enter $label' : null,
+        decoration: InputDecoration(
+          labelText: isRequired ? label : '$label (Optional)',
+          prefixIcon: Icon(icon),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+        ),
+        validator: (v) => (isRequired && (v == null || v.trim().isEmpty)) ? 'Please enter $label' : null,
       ),
     );
   }
 
   Widget _buildDropdown(String label, String? value, List<String> items, Function(String?) onChanged) {
-    // Ensure the current value is actually in the items list to prevent crash
-    final safeValue = items.contains(value) ? value : (items.isNotEmpty ? items[0] : null);
-
+    final effectiveValue = items.contains(value) ? value : "None";
     return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.only(bottom: 16),
       child: DropdownButtonFormField<String>(
-        value: safeValue,
-        decoration: InputDecoration(labelText: label, border: const OutlineInputBorder()),
+        value: effectiveValue,
+        decoration: InputDecoration(labelText: '$label (Optional)', border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
         items: items.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
         onChanged: onChanged,
       ),
     );
   }
 
-  Widget _buildPhotoPreview(int index) {
-    return Stack(
-      children: [
-        Container(
-          margin: const EdgeInsets.only(right: 12),
-          width: 100,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(12),
-            image: DecorationImage(image: FileImage(_imageFiles[index]), fit: BoxFit.cover),
-            border: Border.all(color: Theme.of(context).colorScheme.primary.withOpacity(0.3)),
+  Widget _buildScanTextField(TextEditingController controller, String label, IconData icon) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: TextFormField(
+        controller: controller,
+        decoration: InputDecoration(
+          labelText: '$label (Optional)',
+          prefixIcon: Icon(icon),
+          suffixIcon: IconButton(
+            icon: Icon(Icons.camera_alt, color: Theme.of(context).colorScheme.primary),
+            onPressed: () async {
+              final String? scannedCode = await Navigator.push(context, MaterialPageRoute(builder: (context) => const BarcodeScannerWidget()));
+              if (scannedCode != null && mounted) setState(() => controller.text = scannedCode);
+            },
           ),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
         ),
-        Positioned(
-          right: 5,
-          top: -5,
-          child: GestureDetector(
-            onTap: () => setState(() => _imageFiles.removeAt(index)),
-            child: const CircleAvatar(
-              radius: 12,
-              backgroundColor: Colors.red,
-              child: Icon(Icons.close, size: 16, color: Colors.white),
-            ),
-          ),
-        ),
-      ],
+      ),
     );
   }
 
-  Widget _buildAddPhotoButton() {
-    final theme = Theme.of(context);
+  Widget _buildAddPhotoButton(ThemeData theme) {
     return GestureDetector(
       onTap: () => _showPickerOptions(),
       child: Container(
+        margin: const EdgeInsets.only(top: 10),
         width: 100,
-        decoration: BoxDecoration(
-          color: theme.colorScheme.surfaceVariant,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: theme.colorScheme.outlineVariant),
-        ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.add_a_photo, color: theme.colorScheme.primary),
-            const SizedBox(height: 4),
-            Text("Add Photo", style: TextStyle(fontSize: 12, color: theme.colorScheme.primary)),
-          ],
-        ),
+        decoration: BoxDecoration(color: theme.colorScheme.surfaceVariant, borderRadius: BorderRadius.circular(12), border: Border.all(color: theme.colorScheme.outlineVariant)),
+        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          Icon(Icons.add_a_photo, color: theme.colorScheme.primary),
+          const SizedBox(height: 4),
+          Text("Add Photo", style: TextStyle(fontSize: 12, color: theme.colorScheme.primary)),
+        ]),
       ),
     );
   }
@@ -320,21 +362,10 @@ class _AddItemScreenState extends State<AddItemScreen> {
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) => Padding(
         padding: const EdgeInsets.symmetric(vertical: 20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.camera_alt),
-              title: const Text('Take Photo with Camera'),
-              onTap: () { Navigator.pop(ctx); _pickImage(ImageSource.camera); },
-            ),
-            ListTile(
-              leading: const Icon(Icons.photo_library),
-              title: const Text('Import from Gallery'),
-              onTap: () { Navigator.pop(ctx); _pickImage(ImageSource.gallery); },
-            ),
-          ],
-        ),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(leading: const Icon(Icons.camera_alt), title: const Text('Take Photo'), onTap: () { Navigator.pop(ctx); _pickImage(ImageSource.camera); }),
+          ListTile(leading: const Icon(Icons.photo_library), title: const Text('From Gallery'), onTap: () { Navigator.pop(ctx); _pickImage(ImageSource.gallery); }),
+        ]),
       ),
     );
   }

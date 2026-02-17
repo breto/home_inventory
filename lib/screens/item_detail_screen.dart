@@ -1,10 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:provider/provider.dart';
 import '../models/item.dart';
-import '../providers/inventory_provider.dart';
-import 'add_item_screen.dart'; // Required to navigate to Edit mode
 
 class ItemDetailScreen extends StatelessWidget {
   final Item item;
@@ -12,123 +9,26 @@ class ItemDetailScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final currencyFormat = NumberFormat.simpleCurrency();
-    final dateFormat = DateFormat.yMMMMd();
+    final theme = Theme.of(context);
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Item Details'),
-        actions: [
-          // --- EDIT BUTTON ---
-          IconButton(
-            icon: const Icon(Icons.edit_outlined),
-            tooltip: 'Edit Item',
-            onPressed: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (context) => AddItemScreen(itemToEdit: item),
-                ),
-              );
-            },
-          ),
-          // --- DELETE BUTTON ---
-          IconButton(
-            icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
-            onPressed: () => _confirmDelete(context),
-          ),
-        ],
-      ),
+      appBar: AppBar(title: Text(item.name)),
       body: SingleChildScrollView(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // --- PHOTO GALLERY CAROUSEL ---
-            if (item.imagePaths.isNotEmpty)
-              SizedBox(
-                height: 350,
-                child: PageView.builder(
-                  itemCount: item.imagePaths.length,
-                  itemBuilder: (ctx, i) {
-                    return Container(
-                      width: MediaQuery.of(context).size.width,
-                      color: Colors.black,
-                      child: Image.file(
-                        File(item.imagePaths[i]),
-                        fit: BoxFit.contain,
-                      ),
-                    );
-                  },
-                ),
-              )
-            else
-              Container(
-                height: 250,
-                width: double.infinity,
-                color: Colors.grey[200],
-                child: const Icon(Icons.image_not_supported, size: 80, color: Colors.grey),
-              ),
-
-            if (item.imagePaths.length > 1)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 8),
-                child: Center(child: Text('Swipe for more photos', style: TextStyle(color: Colors.grey, fontSize: 12))),
-              ),
-
+            _buildImageGallery(context),
             Padding(
-              padding: const EdgeInsets.all(20.0),
+              padding: const EdgeInsets.all(16.0),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Item Name and Price Header
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Expanded(
-                        child: Text(
-                          item.name,
-                          style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
-                        ),
-                      ),
-                      Text(
-                        currencyFormat.format(item.value),
-                        style: const TextStyle(fontSize: 24, color: Colors.green, fontWeight: FontWeight.bold),
-                      ),
-                    ],
-                  ),
+                  _buildPriceAndDate(theme),
+                  const Divider(height: 32),
+                  if (item.warrantyExpiry != null) _buildWarrantyCard(theme),
+                  _buildInfoGrid(theme),
                   const SizedBox(height: 20),
-
-                  // Info Cards
-                  _buildSectionTitle('LOCATION & CATEGORY'),
-                  Row(
-                    children: [
-                      _buildChip(item.room ?? 'No Room', Icons.meeting_room),
-                      const SizedBox(width: 8),
-                      _buildChip(item.category ?? 'No Category', Icons.category),
-                    ],
-                  ),
-
-                  const SizedBox(height: 24),
-                  _buildSectionTitle('PRODUCT SPECIFICATIONS'),
-                  _buildDetailRow(Icons.business, 'Brand', item.brand),
-                  _buildDetailRow(Icons.label_important, 'Model', item.model),
-                  _buildDetailRow(Icons.qr_code, 'Serial #', item.serialNumber),
-                  _buildDetailRow(Icons.calendar_today, 'Added On', dateFormat.format(item.purchaseDate)),
-
-                  const SizedBox(height: 24),
-                  _buildSectionTitle('NOTES'),
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: Colors.blueGrey[50],
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Text(
-                      (item.notes == null || item.notes!.isEmpty) ? 'No notes provided.' : item.notes!,
-                      style: const TextStyle(fontSize: 16, height: 1.5),
-                    ),
-                  ),
-                  const SizedBox(height: 40),
+                  if (item.notes != null) _buildNotes(theme),
                 ],
               ),
             ),
@@ -138,64 +38,166 @@ class ItemDetailScreen extends StatelessWidget {
     );
   }
 
-  // --- UI HELPERS ---
+  Widget _buildImageGallery(BuildContext context) {
+    return SizedBox(
+      height: 300,
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        itemCount: item.imagePaths.length,
+        itemBuilder: (context, index) {
+          final bool isReceipt = item.receiptIndices.contains(index);
 
-  Widget _buildSectionTitle(String title) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Text(
-        title,
-        style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.blueGrey[700], letterSpacing: 1.1),
+          return Stack(
+            children: [
+              Container(
+                width: MediaQuery.of(context).size.width * 0.85,
+                margin: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(15),
+                  image: DecorationImage(
+                    image: FileImage(File(item.imagePaths[index])),
+                    fit: BoxFit.cover,
+                  ),
+                ),
+              ),
+              if (isReceipt)
+                Positioned(
+                  top: 20,
+                  left: 20,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.green.withOpacity(0.9),
+                      borderRadius: BorderRadius.circular(20),
+                      boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4)],
+                    ),
+                    child: const Row(
+                      children: [
+                        Icon(Icons.receipt_long, color: Colors.white, size: 16),
+                        SizedBox(width: 4),
+                        Text("OFFICIAL RECEIPT",
+                            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+          );
+        },
       ),
     );
   }
 
-  Widget _buildChip(String label, IconData icon) {
-    return Chip(
-      avatar: Icon(icon, size: 16, color: Colors.blueGrey),
-      label: Text(label),
-      backgroundColor: Colors.blueGrey[50],
-      side: BorderSide.none,
-    );
-  }
+  Widget _buildWarrantyCard(ThemeData theme) {
+    final now = DateTime.now();
+    final isExpired = item.warrantyExpiry!.isBefore(now);
+    final difference = item.warrantyExpiry!.difference(now).inDays;
 
-  Widget _buildDetailRow(IconData icon, String label, String? value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8.0),
+    return Container(
+      margin: const EdgeInsets.only(bottom: 20),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: isExpired ? Colors.red.shade50 : Colors.blue.shade50,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: isExpired ? Colors.red.shade200 : Colors.blue.shade200),
+      ),
       child: Row(
         children: [
-          Icon(icon, size: 20, color: Colors.blueGrey[300]),
-          const SizedBox(width: 16),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(label, style: TextStyle(color: Colors.grey[600], fontSize: 12)),
-              Text(value ?? '--', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
-            ],
+          Icon(
+            isExpired ? Icons.warning_amber_rounded : Icons.verified_user_outlined,
+            color: isExpired ? Colors.red : Colors.blue,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  isExpired ? "Warranty Expired" : "Under Warranty",
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: isExpired ? Colors.red.shade900 : Colors.blue.shade900,
+                  ),
+                ),
+                Text(
+                  isExpired
+                      ? "Expired on ${DateFormat('MMM d, yyyy').format(item.warrantyExpiry!)}"
+                      : "$difference days remaining (until ${DateFormat('MMM d, yyyy').format(item.warrantyExpiry!)})",
+                  style: const TextStyle(fontSize: 13),
+                ),
+              ],
+            ),
           ),
         ],
       ),
     );
   }
 
-  void _confirmDelete(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Delete Item?'),
-        content: const Text('This will permanently remove this record and all associated photos.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          TextButton(
-            onPressed: () {
-              Provider.of<InventoryProvider>(context, listen: false).deleteItem(item.id!);
-              Navigator.pop(ctx);
-              Navigator.pop(context);
-            },
-            child: const Text('Delete', style: TextStyle(color: Colors.red)),
-          ),
-        ],
-      ),
+  Widget _buildPriceAndDate(ThemeData theme) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text("Value", style: theme.textTheme.bodySmall),
+            Text(
+              NumberFormat.currency(symbol: "\$").format(item.value),
+              style: theme.textTheme.headlineMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+                color: theme.colorScheme.primary,
+              ),
+            ),
+          ],
+        ),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Text("Purchased", style: theme.textTheme.bodySmall),
+            Text(
+              DateFormat('MMM d, yyyy').format(item.purchaseDate),
+              style: theme.textTheme.titleMedium,
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildInfoGrid(ThemeData theme) {
+    return GridView.count(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      crossAxisCount: 2,
+      childAspectRatio: 3,
+      children: [
+        _buildInfoTile("Room", item.room ?? "Unassigned"),
+        _buildInfoTile("Category", item.category ?? "General"),
+        _buildInfoTile("Brand", item.brand ?? "N/A"),
+        _buildInfoTile("Model", item.model ?? "N/A"),
+      ],
+    );
+  }
+
+  Widget _buildInfoTile(String label, String value) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+        Text(value, style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 14), overflow: TextOverflow.ellipsis),
+      ],
+    );
+  }
+
+  Widget _buildNotes(ThemeData theme) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text("Notes", style: TextStyle(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 4),
+        Text(item.notes!, style: const TextStyle(color: Colors.black87)),
+      ],
     );
   }
 }

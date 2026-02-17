@@ -1,159 +1,131 @@
 import 'package:flutter/material.dart';
-import '../providers/inventory_provider.dart';
 import 'package:provider/provider.dart';
+import 'dart:io';
+import 'package:file_picker/file_picker.dart';
+import '../providers/inventory_provider.dart';
+import '../services/zip_service.dart';
+import 'list_management_screen.dart'; // We will create this next
 
-class SettingsScreen extends StatefulWidget {
+class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
 
   @override
-  State<SettingsScreen> createState() => _SettingsScreenState();
-}
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
 
-class _SettingsScreenState extends State<SettingsScreen> {
-  // Logic is now delegated to the Provider for professional state management
-
-  void _showAddDialog(bool isRoom) {
-    final controller = TextEditingController();
-
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(isRoom ? 'Add New Room' : 'Add New Category'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          textCapitalization: TextCapitalization.words,
-          decoration: InputDecoration(
-            hintText: isRoom ? 'e.g. Attic' : 'e.g. Collectibles',
-            border: const OutlineInputBorder(),
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          ElevatedButton(
-            onPressed: () async {
-              if (controller.text.trim().isNotEmpty) {
-                final text = controller.text.trim();
-                final provider = Provider.of<InventoryProvider>(context, listen: false);
-
-                isRoom ? await provider.addRoom(text) : await provider.addCategory(text);
-
-                if (mounted) Navigator.pop(ctx);
+    return Scaffold(
+      appBar: AppBar(title: const Text('Settings')),
+      body: ListView(
+        children: [
+          _buildSectionHeader(context, 'Data Management'),
+          _buildTile(
+            context,
+            icon: Icons.cloud_upload_outlined,
+            color: Colors.blue,
+            title: 'Export Backup',
+            subtitle: 'Create a .zip file with all data and photos',
+            onTap: () async {
+              final provider = Provider.of<InventoryProvider>(context, listen: false);
+              final allImages = provider.items.expand((item) => item.imagePaths).toList();
+              File? zip = await ZipService.createFullBackup(allImages);
+              if (zip != null && context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Backup created at: ${zip.path}')),
+                );
               }
             },
-            child: const Text('Add'),
+          ),
+          _buildTile(
+            context,
+            icon: Icons.file_download_outlined,
+            color: Colors.orange,
+            title: 'Import Backup',
+            subtitle: 'Restore inventory from another device',
+            onTap: () => _handleImport(context),
+          ),
+          const Divider(),
+          _buildSectionHeader(context, 'Organization'),
+          _buildTile(
+            context,
+            icon: Icons.meeting_room_outlined,
+            color: theme.colorScheme.primary,
+            title: 'Manage Rooms',
+            subtitle: 'Add or remove locations in your home',
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const ListManagementScreen(isRoom: true)),
+            ),
+          ),
+          _buildTile(
+            context,
+            icon: Icons.style_outlined,
+            color: theme.colorScheme.primary,
+            title: 'Manage Categories',
+            subtitle: 'Define item types (Electronics, Tools, etc.)',
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const ListManagementScreen(isRoom: false)),
+            ),
           ),
         ],
       ),
     );
   }
 
-  void _handleDelete(bool isRoom, String itemName) {
-    final provider = Provider.of<InventoryProvider>(context, listen: false);
-    int count = isRoom
-        ? provider.getItemsCountInRoom(itemName)
-        : provider.getItemsCountInCategory(itemName);
-
-    if (count > 0) {
-      _showDeleteWarning(itemName, count, isRoom);
-    } else {
-      isRoom ? provider.removeRoom(itemName) : provider.removeCategory(itemName);
-    }
+  Widget _buildSectionHeader(BuildContext context, String title) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
+      child: Text(
+        title.toUpperCase(),
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.bold,
+          color: Theme.of(context).colorScheme.secondary,
+          letterSpacing: 1.1,
+        ),
+      ),
+    );
   }
 
-  void _showDeleteWarning(String name, int count, bool isRoom) {
-    final colorScheme = Theme.of(context).colorScheme;
+  Widget _buildTile(BuildContext context,
+      {required IconData icon, required Color color, required String title, required String subtitle, required VoidCallback onTap}) {
+    return ListTile(
+      leading: CircleAvatar(
+        backgroundColor: color.withOpacity(0.1),
+        child: Icon(icon, color: color),
+      ),
+      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w500)),
+      subtitle: Text(subtitle, style: const TextStyle(fontSize: 12)),
+      trailing: const Icon(Icons.chevron_right, size: 20),
+      onTap: onTap,
+    );
+  }
+
+  Future<void> _handleImport(BuildContext context) async {
+    FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
+    if (result == null) return;
+
+    final provider = Provider.of<InventoryProvider>(context, listen: false);
 
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Row(
-          children: [
-            Icon(Icons.warning_amber_rounded, color: colorScheme.error),
-            const SizedBox(width: 10),
-            const Text('Items in Use'),
-          ],
-        ),
-        content: Text(
-            'There are $count items currently assigned to the ${isRoom ? 'Room' : 'Category'} "$name".\n\n'
-                'If you delete this, those items will keep the label "$name", but it will no longer appear in your selection lists. Proceed?'
-        ),
+        title: const Text('Restore Data?'),
+        content: const Text('This will overwrite your current inventory. Continue?'),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('CANCEL'),
-          ),
-          TextButton(
-            onPressed: () {
-              final provider = Provider.of<InventoryProvider>(context, listen: false);
-              isRoom ? provider.removeRoom(name) : provider.removeCategory(name);
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('CANCEL')),
+          ElevatedButton(
+            onPressed: () async {
               Navigator.pop(ctx);
+              bool success = await ZipService.importBackup(File(result.files.single.path!));
+              if (success) {
+                await provider.refreshAfterImport();
+              }
             },
-            child: Text('DELETE ANYWAY', style: TextStyle(color: colorScheme.error)),
+            child: const Text('RESTORE'),
           ),
         ],
       ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    // We listen to the provider here so the UI rebuilds when lists change
-    final provider = context.watch<InventoryProvider>();
-
-    return DefaultTabController(
-      length: 2,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('Manage Lists'),
-          bottom: const TabBar(
-            tabs: [
-              Tab(icon: Icon(Icons.meeting_room), text: 'Rooms'),
-              Tab(icon: Icon(Icons.style), text: 'Categories'),
-            ],
-          ),
-        ),
-        body: TabBarView(
-          children: [
-            _buildList(true, provider.rooms),
-            _buildList(false, provider.categories),
-          ],
-        ),
-        floatingActionButton: Builder(
-          builder: (context) => FloatingActionButton.extended(
-            onPressed: () {
-              final tabIndex = DefaultTabController.of(context).index;
-              _showAddDialog(tabIndex == 0);
-            },
-            label: const Text('Add New'),
-            icon: const Icon(Icons.add),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildList(bool isRoom, List<String> items) {
-    if (items.isEmpty) {
-      return const Center(child: Text('No items added yet.', style: TextStyle(color: Colors.grey)));
-    }
-
-    return ListView.separated(
-      padding: const EdgeInsets.all(8),
-      itemCount: items.length,
-      separatorBuilder: (context, index) => const Divider(height: 1),
-      itemBuilder: (ctx, i) {
-        final itemName = items[i];
-        return ListTile(
-          title: Text(itemName),
-          leading: Icon(isRoom ? Icons.door_front_door_outlined : Icons.label_outline),
-          trailing: IconButton(
-            icon: const Icon(Icons.delete_outline),
-            color: Theme.of(context).colorScheme.error,
-            onPressed: () => _handleDelete(isRoom, itemName),
-          ),
-        );
-      },
     );
   }
 }

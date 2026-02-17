@@ -53,4 +53,42 @@ class ZipService {
       return null;
     }
   }
+
+  static Future<bool> importBackup(File zipFile) async {
+    try {
+      final bytes = await zipFile.readAsBytes();
+      final archive = ZipDecoder().decodeBytes(bytes);
+      final appDir = await getApplicationDocumentsDirectory();
+      final dbPath = await _getDatabasePath();
+
+      for (final file in archive) {
+        final filename = file.name;
+        if (file.isFile) {
+          final data = file.content as List<int>;
+
+          if (filename == 'inventory.db') {
+            // 1. Handle Database Restore
+            // We write to a temp file first to ensure integrity
+            final tempDb = File('$dbPath.tmp');
+            await tempDb.writeAsBytes(data);
+
+            // Close existing connection before overwriting
+            await databaseFactory.deleteDatabase(dbPath);
+            await tempDb.rename(dbPath);
+          } else {
+            // 2. Handle Images Restore
+            // Reconstruct the image in the app's document folder
+            final outFile = File(p.join(appDir.path, filename));
+            await outFile.create(recursive: true);
+            await outFile.writeAsBytes(data);
+          }
+        }
+      }
+      return true;
+    } catch (e) {
+      dev.log("Import Failure: $e");
+      return false;
+    }
+  }
+
 }

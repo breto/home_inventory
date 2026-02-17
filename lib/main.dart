@@ -13,7 +13,8 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ChangeNotifierProvider(
-      create: (context) => InventoryProvider()..fetchItems(),
+      // Change fetchItems() to initializeData()
+      create: (context) => InventoryProvider()..initializeData(),
       child: MaterialApp(
         title: 'Home Inventory',
         theme: ThemeData(
