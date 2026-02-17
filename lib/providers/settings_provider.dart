@@ -11,6 +11,8 @@ class SettingsProvider with ChangeNotifier {
   String get address => _address;
   String get policyNumber => _policyNumber;
   ThemeMode get themeMode => _themeMode;
+  String _insuranceCompany = "";
+  String get insuranceCompany => _insuranceCompany;
 
   SettingsProvider() {
     _loadSettings();
@@ -22,17 +24,20 @@ class SettingsProvider with ChangeNotifier {
     _address = prefs.getString('address') ?? "";
     _policyNumber = prefs.getString('policyNumber') ?? "";
     _themeMode = ThemeMode.values[prefs.getInt('themeMode') ?? 0];
+    _insuranceCompany = prefs.getString('insuranceCompany') ?? "";
     notifyListeners();
   }
 
-  Future<void> updateProfile(String name, String addr, String policy) async {
+  Future<void> updateProfile(String name, String addr, String policy, String company) async {
     final prefs = await SharedPreferences.getInstance();
     _userName = name;
     _address = addr;
     _policyNumber = policy;
+    _insuranceCompany = company;
     await prefs.setString('userName', name);
     await prefs.setString('address', addr);
     await prefs.setString('policyNumber', policy);
+    await prefs.setString('insuranceCompany', company);
     notifyListeners();
   }
 

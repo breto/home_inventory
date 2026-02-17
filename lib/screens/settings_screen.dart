@@ -3,7 +3,7 @@ import 'package:provider/provider.dart';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import '../providers/inventory_provider.dart';
-import '../providers/settings_provider.dart'; // New Provider
+import '../providers/settings_provider.dart';
 import '../services/zip_service.dart';
 import 'list_management_screen.dart';
 
@@ -17,6 +17,7 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   // Controllers for the Insurance Profile
   late TextEditingController _nameController;
+  late TextEditingController _companyController;
   late TextEditingController _addressController;
   late TextEditingController _policyController;
 
@@ -25,6 +26,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     super.initState();
     final settings = context.read<SettingsProvider>();
     _nameController = TextEditingController(text: settings.userName);
+    _companyController = TextEditingController(text: settings.insuranceCompany);
     _addressController = TextEditingController(text: settings.address);
     _policyController = TextEditingController(text: settings.policyNumber);
   }
@@ -32,6 +34,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void dispose() {
     _nameController.dispose();
+    _companyController.dispose();
     _addressController.dispose();
     _policyController.dispose();
     super.dispose();
@@ -46,7 +49,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       appBar: AppBar(title: const Text('Settings')),
       body: ListView(
         children: [
-          // --- NEW SECTION: INSURANCE PROFILE ---
+          // --- INSURANCE PROFILE SECTION ---
           _buildSectionHeader(context, 'Insurance Profile'),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
@@ -61,12 +64,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ),
                 const SizedBox(height: 12),
+                // NEW: Insurance Company Field
                 TextField(
-                  controller: _addressController,
-                  maxLines: 2,
+                  controller: _companyController,
                   decoration: const InputDecoration(
-                    labelText: "Property Address",
-                    prefixIcon: Icon(Icons.home_outlined),
+                    labelText: "Insurance Company",
+                    prefixIcon: Icon(Icons.business_outlined),
                     border: OutlineInputBorder(),
                   ),
                 ),
@@ -80,6 +83,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ),
                 const SizedBox(height: 12),
+                TextField(
+                  controller: _addressController,
+                  maxLines: 2,
+                  decoration: const InputDecoration(
+                    labelText: "Property Address",
+                    prefixIcon: Icon(Icons.home_outlined),
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton.icon(
@@ -88,9 +101,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         _nameController.text,
                         _addressController.text,
                         _policyController.text,
+                        _companyController.text, // Passing the new company field
                       );
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text("Profile Saved")),
+                        const SnackBar(
+                          content: Text("Profile Saved Successfully"),
+                          behavior: SnackBarBehavior.floating,
+                        ),
                       );
                     },
                     icon: const Icon(Icons.save),
@@ -103,7 +120,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           const Divider(),
 
-          // --- NEW SECTION: APPEARANCE ---
+          // --- APPEARANCE SECTION ---
           _buildSectionHeader(context, 'Appearance'),
           ListTile(
             leading: const CircleAvatar(child: Icon(Icons.palette_outlined)),
@@ -124,7 +141,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           const Divider(),
 
-          // --- EXISTING SECTION: DATA MANAGEMENT ---
+          // --- DATA MANAGEMENT SECTION ---
           _buildSectionHeader(context, 'Data Management'),
           _buildTile(
             context,
@@ -154,7 +171,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           const Divider(),
 
-          // --- EXISTING SECTION: ORGANIZATION ---
+          // --- ORGANIZATION SECTION ---
           _buildSectionHeader(context, 'Organization'),
           _buildTile(
             context,
@@ -184,7 +201,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  // --- HELPER METHODS (Preserving your original style) ---
+  // --- HELPER METHODS ---
 
   Widget _buildSectionHeader(BuildContext context, String title) {
     return Padding(
