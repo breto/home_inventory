@@ -29,6 +29,7 @@ dependencies:
   speech_to_text: ^7.0.0
   camera: ^0.10.5+5
   permission_handler: ^11.0.0
+  flutter_speed_dial: ^7.0.0
 
 # Section 2: Tools for you (the developer) only
 dev_dependencies:

@@ -9,7 +9,6 @@ class DatabaseHelper {
 
   DatabaseHelper._init();
 
-  // Incremented version to 5 to trigger migration
   static const String _dbName = 'inventory.db';
   static const int _dbVersion = 5;
 
@@ -32,7 +31,6 @@ class DatabaseHelper {
   }
 
   Future _createDB(Database db, int version) async {
-    // Items Table with all current fields
     await db.execute('''
       CREATE TABLE items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,10 +62,7 @@ class DatabaseHelper {
 
   Future _onUpgrade(Database db, int oldVersion, int newVersion) async {
     dev.log("Upgrading database from $oldVersion to $newVersion");
-
     if (oldVersion < 5) {
-      // Add the new columns for Receipt tracking and Warranty
-      // We use 'ALTER TABLE' so existing user data stays intact
       try {
         await db.execute('ALTER TABLE items ADD COLUMN warrantyExpiry TEXT');
         await db.execute('ALTER TABLE items ADD COLUMN receiptIndices TEXT');
@@ -79,9 +74,12 @@ class DatabaseHelper {
 
   // --- CRUD OPERATIONS ---
 
-  Future<int> create(Item item) async {
+  /// Inserts item and returns the Item object including the new DB ID.
+  /// Crucial for keeping the InventoryProvider in sync without a full reload.
+  Future<Item> create(Item item) async {
     final db = await instance.database;
-    return await db.insert('items', item.toMap());
+    final id = await db.insert('items', item.toMap());
+    return item.copyWith(id: id);
   }
 
   Future<List<Item>> readAllItems() async {
@@ -92,17 +90,23 @@ class DatabaseHelper {
 
   Future<int> update(Item item) async {
     final db = await instance.database;
-    return db.update(
-        'items',
-        item.toMap(),
-        where: 'id = ?',
-        whereArgs: [item.id]
+    return await db.update(
+      'items',
+      item.toMap(),
+      where: 'id = ?',
+      whereArgs: [item.id],
     );
   }
 
   Future<int> delete(int id) async {
     final db = await instance.database;
     return await db.delete('items', where: 'id = ?', whereArgs: [id]);
+  }
+
+  /// Clears the entire items table.
+  Future<int> deleteAllItems() async {
+    final db = await instance.database;
+    return await db.delete('items');
   }
 
   // --- LIST HELPERS ---
@@ -117,7 +121,9 @@ class DatabaseHelper {
     final db = await database;
     await db.transaction((txn) async {
       await txn.delete('rooms');
-      for (var r in rooms) await txn.insert('rooms', {'name': r});
+      for (var r in rooms) {
+        await txn.insert('rooms', {'name': r}, conflictAlgorithm: ConflictAlgorithm.replace);
+      }
     });
   }
 
@@ -131,7 +137,9 @@ class DatabaseHelper {
     final db = await database;
     await db.transaction((txn) async {
       await txn.delete('categories');
-      for (var c in categories) await txn.insert('categories', {'name': c});
+      for (var c in categories) {
+        await txn.insert('categories', {'name': c}, conflictAlgorithm: ConflictAlgorithm.replace);
+      }
     });
   }
 }

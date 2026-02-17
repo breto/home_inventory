@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import '../models/item.dart';
 import '../data/database_helper.dart';
 
+enum SortOption { name, value, date }
+
 class InventoryProvider with ChangeNotifier {
   List<Item> _items = [];
   List<String> _rooms = [];
@@ -15,6 +17,9 @@ class InventoryProvider with ChangeNotifier {
   bool get isLoading => _isLoading;
   String get searchQuery => _searchQuery;
 
+  SortOption _currentSort = SortOption.name;
+  SortOption get currentSort => _currentSort;
+
   // --- INITIALIZATION ---
 
   Future<void> initializeData() async {
@@ -22,9 +27,16 @@ class InventoryProvider with ChangeNotifier {
     notifyListeners();
 
     try {
-      _items = await DatabaseHelper.instance.readAllItems();
-      _rooms = await DatabaseHelper.instance.getRooms();
-      _categories = await DatabaseHelper.instance.getCategories();
+      // Fetch everything in parallel for better startup speed
+      final results = await Future.wait([
+        DatabaseHelper.instance.readAllItems(),
+        DatabaseHelper.instance.getRooms(),
+        DatabaseHelper.instance.getCategories(),
+      ]);
+
+      _items = results[0] as List<Item>;
+      _rooms = results[1] as List<String>;
+      _categories = results[2] as List<String>;
     } catch (e) {
       debugPrint('Error initializing data: $e');
     } finally {
@@ -45,38 +57,76 @@ class InventoryProvider with ChangeNotifier {
   }
 
   List<Item> get filteredItems {
-    if (_searchQuery.isEmpty) return _items;
-    return _items.where((item) {
-      final searchLower = _searchQuery.toLowerCase();
-      return item.name.toLowerCase().contains(searchLower) ||
-          (item.room ?? '').toLowerCase().contains(searchLower) ||
-          (item.category ?? '').toLowerCase().contains(searchLower);
-    }).toList();
+    List<Item> list = _items;
+
+    // 1. Filter
+    if (_searchQuery.isNotEmpty) {
+      final query = _searchQuery.toLowerCase();
+      list = list.where((item) {
+        return item.name.toLowerCase().contains(query) ||
+            (item.room?.toLowerCase().contains(query) ?? false) ||
+            (item.brand?.toLowerCase().contains(query) ?? false); // ... add other fields
+      }).toList();
+    }
+
+    // 2. Sort
+    switch (_currentSort) {
+      case SortOption.name:
+        list.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+        break;
+      case SortOption.value:
+        list.sort((a, b) => b.value.compareTo(a.value)); // Descending (highest first)
+        break;
+      case SortOption.date:
+        list.sort((a, b) => b.purchaseDate.compareTo(a.purchaseDate)); // Newest first
+        break;
+    }
+    return list;
   }
 
-  // --- ACTIONS ---
+  void setSort(SortOption option) {
+    _currentSort = option;
+    notifyListeners(); // This tells the HomeScreen to rebuild with the new order
+  }
+
+  // --- ACTIONS (Optimized for Speed) ---
 
   Future<void> addItem(Item item) async {
-    await DatabaseHelper.instance.create(item);
-    _items = await DatabaseHelper.instance.readAllItems();
+    // 1. Save to DB and get the generated ID
+    final newItem = await DatabaseHelper.instance.create(item);
+
+    // 2. Update local memory instead of re-reading the whole DB
+    _items.add(newItem);
     notifyListeners();
   }
 
   Future<void> updateItem(Item item) async {
+    // 1. Update DB
     await DatabaseHelper.instance.update(item);
-    _items = await DatabaseHelper.instance.readAllItems();
-    notifyListeners();
+
+    // 2. Update local list efficiently
+    final index = _items.indexWhere((element) => element.id == item.id);
+    if (index != -1) {
+      _items[index] = item;
+      notifyListeners();
+    }
   }
 
   Future<void> deleteItem(int id) async {
+    // 1. Delete from DB
     await DatabaseHelper.instance.delete(id);
-    _items = await DatabaseHelper.instance.readAllItems();
+
+    // 2. Remove from local memory
+    _items.removeWhere((item) => item.id == id);
     notifyListeners();
   }
 
+  // --- ROOMS & CATEGORIES ---
+
   Future<void> addRoom(String name) async {
-    if (!_rooms.contains(name)) {
-      _rooms.add(name);
+    final trimmedName = name.trim();
+    if (trimmedName.isNotEmpty && !_rooms.contains(trimmedName)) {
+      _rooms.add(trimmedName);
       _rooms.sort();
       await DatabaseHelper.instance.saveRooms(_rooms);
       notifyListeners();
@@ -90,8 +140,9 @@ class InventoryProvider with ChangeNotifier {
   }
 
   Future<void> addCategory(String name) async {
-    if (!_categories.contains(name)) {
-      _categories.add(name);
+    final trimmedName = name.trim();
+    if (trimmedName.isNotEmpty && !_categories.contains(trimmedName)) {
+      _categories.add(trimmedName);
       _categories.sort();
       await DatabaseHelper.instance.saveCategories(_categories);
       notifyListeners();
@@ -105,9 +156,9 @@ class InventoryProvider with ChangeNotifier {
   }
 
   Future<void> clearAll() async {
+    // Make sure your DatabaseHelper actually supports a truncate/delete all
+    await DatabaseHelper.instance.deleteAllItems();
     _items.clear();
-    // If you are using a database like SQFlite, execute:
-    // await _db.delete('items');
     notifyListeners();
   }
 
