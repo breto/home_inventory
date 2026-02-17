@@ -75,6 +75,8 @@ dependencies:
   printing: ^5.11.1
   flutter_image_compress: ^2.3.0
   mobile_scanner: ^5.2.0
+  file_picker: ^8.0.0
+  csv: ^5.0.2
 
 # Section 2: Tools for you (the developer) only
 dev_dependencies:
@@ -104,7 +106,8 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ChangeNotifierProvider(
-      create: (context) => InventoryProvider()..fetchItems(),
+      // Change fetchItems() to initializeData()
+      create: (context) => InventoryProvider()..initializeData(),
       child: MaterialApp(
         title: 'Home Inventory',
         theme: ThemeData(
@@ -132,9 +135,9 @@ class DatabaseHelper {
 
   DatabaseHelper._init();
 
-  // Point 9: Consistent naming and versioning
+  // Incremented version to 5 to trigger migration
   static const String _dbName = 'inventory.db';
-  static const int _dbVersion = 3;
+  static const int _dbVersion = 5;
 
   Future<Database> get database async {
     if (_database != null) return _database!;
@@ -150,50 +153,61 @@ class DatabaseHelper {
       path,
       version: _dbVersion,
       onCreate: _createDB,
-      onUpgrade: _onUpgrade, // Point 5: Migration support
+      onUpgrade: _onUpgrade,
     );
   }
 
   Future _createDB(Database db, int version) async {
-    const idType = 'INTEGER PRIMARY KEY AUTOINCREMENT';
-    const textType = 'TEXT NOT NULL';
-    const textNullable = 'TEXT';
-    const doubleType = 'REAL NOT NULL';
-
+    // Items Table with all current fields
     await db.execute('''
-CREATE TABLE items (
-  id $idType,
-  name $textType,
-  value $doubleType,
-  purchaseDate $textType,
-  imagePaths $textType,
-  room $textNullable,
-  category $textNullable,
-  serialNumber $textNullable,
-  brand $textNullable,
-  model $textNullable,
-  notes $textNullable
-)
+      CREATE TABLE items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        value REAL NOT NULL,
+        purchaseDate TEXT NOT NULL,
+        warrantyExpiry TEXT,
+        imagePaths TEXT NOT NULL,
+        receiptIndices TEXT,
+        room TEXT,
+        category TEXT,
+        serialNumber TEXT,
+        brand TEXT,
+        model TEXT,
+        notes TEXT
+      )
     ''');
+
+    await db.execute('CREATE TABLE rooms (name TEXT PRIMARY KEY)');
+    await db.execute('CREATE TABLE categories (name TEXT PRIMARY KEY)');
+
+    // Seed Data
+    final rooms = ['Living Room', 'Kitchen', 'Bedroom', 'Garage', 'Office'];
+    for (var r in rooms) await db.insert('rooms', {'name': r});
+
+    final cats = ['Electronics', 'Furniture', 'Jewelry', 'Tools', 'Appliances'];
+    for (var c in cats) await db.insert('categories', {'name': c});
   }
 
-  // Point 5: Handle future database changes without wiping user data
   Future _onUpgrade(Database db, int oldVersion, int newVersion) async {
     dev.log("Upgrading database from $oldVersion to $newVersion");
-    if (oldVersion < 3) {
-      // Future migration logic goes here
+
+    if (oldVersion < 5) {
+      // Add the new columns for Receipt tracking and Warranty
+      // We use 'ALTER TABLE' so existing user data stays intact
+      try {
+        await db.execute('ALTER TABLE items ADD COLUMN warrantyExpiry TEXT');
+        await db.execute('ALTER TABLE items ADD COLUMN receiptIndices TEXT');
+      } catch (e) {
+        dev.log("Migration Note: Columns might already exist. $e");
+      }
     }
   }
 
+  // --- CRUD OPERATIONS ---
+
   Future<int> create(Item item) async {
-    try {
-      final db = await instance.database;
-      return await db.insert('items', item.toMap());
-    } catch (e) {
-      // Point 10: Better error context
-      dev.log("Database Error (Create): $e");
-      rethrow; // Rethrow so the Provider/UI can catch and show a message
-    }
+    final db = await instance.database;
+    return await db.insert('items', item.toMap());
   }
 
   Future<List<Item>> readAllItems() async {
@@ -205,28 +219,46 @@ CREATE TABLE items (
   Future<int> update(Item item) async {
     final db = await instance.database;
     return db.update(
-      'items',
-      item.toMap(),
-      where: 'id = ?',
-      whereArgs: [item.id],
+        'items',
+        item.toMap(),
+        where: 'id = ?',
+        whereArgs: [item.id]
     );
   }
 
   Future<int> delete(int id) async {
     final db = await instance.database;
-    return await db.delete(
-      'items',
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+    return await db.delete('items', where: 'id = ?', whereArgs: [id]);
   }
 
-  // Point 5: Add a close method for clean app termination/testing
-  Future close() async {
-    final db = await _database;
-    if (db != null) {
-      await db.close();
-    }
+  // --- LIST HELPERS ---
+
+  Future<List<String>> getRooms() async {
+    final db = await database;
+    final res = await db.query('rooms', orderBy: 'name ASC');
+    return res.map((e) => e['name'] as String).toList();
+  }
+
+  Future<void> saveRooms(List<String> rooms) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      await txn.delete('rooms');
+      for (var r in rooms) await txn.insert('rooms', {'name': r});
+    });
+  }
+
+  Future<List<String>> getCategories() async {
+    final db = await database;
+    final res = await db.query('categories', orderBy: 'name ASC');
+    return res.map((e) => e['name'] as String).toList();
+  }
+
+  Future<void> saveCategories(List<String> categories) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      await txn.delete('categories');
+      for (var c in categories) await txn.insert('categories', {'name': c});
+    });
   }
 }
 
@@ -239,17 +271,17 @@ import 'dart:convert';
 class Item {
   final int? id;
   final String name;
-  final List<String> imagePaths; // Updated to List
+  final List<String> imagePaths;
   final double value;
   final DateTime purchaseDate;
-
-  // New insurance-focused fields
+  final DateTime? warrantyExpiry;
   final String? serialNumber;
   final String? brand;
   final String? model;
   final String? notes;
   final String? room;
   final String? category;
+  final List<int> receiptIndices; // Indices of images that are receipts
 
   Item({
     this.id,
@@ -257,50 +289,51 @@ class Item {
     required this.imagePaths,
     required this.value,
     required this.purchaseDate,
+    this.warrantyExpiry,
     this.serialNumber,
     this.brand,
     this.model,
     this.notes,
     this.room,
     this.category,
+    this.receiptIndices = const [],
   });
 
-  // Convert an Item object into a Map to store in SQLite
   Map<String, dynamic> toMap() {
     return {
       'id': id,
       'name': name,
-      // Convert the List ["p1", "p2"] into a single String '["p1", "p2"]'
       'imagePaths': jsonEncode(imagePaths),
       'value': value,
       'purchaseDate': purchaseDate.toIso8601String(),
+      'warrantyExpiry': warrantyExpiry?.toIso8601String(),
       'serialNumber': serialNumber,
       'brand': brand,
       'model': model,
       'notes': notes,
       'room': room,
       'category': category,
+      'receiptIndices': jsonEncode(receiptIndices),
     };
   }
 
-  // Create an Item object from a Map (fetched from SQLite)
   factory Item.fromMap(Map<String, dynamic> map) {
     return Item(
-      id: map['id'] as int?,
-      name: map['name'] ?? '',
-      value: (map['value'] as num?)?.toDouble() ?? 0.0,
-      purchaseDate: map['purchaseDate'] != null
-          ? DateTime.tryParse(map['purchaseDate']) ?? DateTime.now()
-          : DateTime.now(),
-      imagePaths: map['imagePaths'] != null
-          ? List<String>.from(jsonDecode(map['imagePaths']))
-          : [],
-      room: map['room'],
-      category: map['category'],
+      id: map['id'],
+      name: map['name'],
+      imagePaths: List<String>.from(jsonDecode(map['imagePaths'])),
+      value: map['value'],
+      purchaseDate: DateTime.parse(map['purchaseDate']),
+      warrantyExpiry: map['warrantyExpiry'] != null ? DateTime.parse(map['warrantyExpiry']) : null,
       serialNumber: map['serialNumber'],
       brand: map['brand'],
       model: map['model'],
       notes: map['notes'],
+      room: map['room'],
+      category: map['category'],
+      receiptIndices: map['receiptIndices'] != null
+          ? List<int>.from(jsonDecode(map['receiptIndices']))
+          : [],
     );
   }
 }
@@ -315,84 +348,144 @@ import '../data/database_helper.dart';
 
 class InventoryProvider with ChangeNotifier {
   List<Item> _items = [];
+  List<String> _rooms = [];
+  List<String> _categories = [];
   bool _isLoading = false;
-
-  List<Item> get items => _items;
-  bool get isLoading => _isLoading;
-
   String _searchQuery = '';
 
+  List<Item> get items => _items;
+  List<String> get rooms => _rooms;
+  List<String> get categories => _categories;
+  bool get isLoading => _isLoading;
   String get searchQuery => _searchQuery;
 
-  void setSearchQuery(String query) {
-    _searchQuery = query;
-    notifyListeners(); // This triggers the UI to rebuild with the filtered results
-  }
+  // --- INITIALIZATION ---
 
-  List<Item> get filteredItems {
-    if (_searchQuery.isEmpty) return _items;
-    return _items.where((item) {
-      final searchLower = _searchQuery.toLowerCase();
-      final nameMatch = item.name.toLowerCase().contains(searchLower);
-      final roomMatch = (item.room ?? '').toLowerCase().contains(searchLower);
-      final categoryMatch = (item.category ?? '').toLowerCase().contains(searchLower);
-      return nameMatch || roomMatch || categoryMatch;
-    }).toList();
-  }
-
-  int getItemCountByRoom(String roomName) {
-    return _items.where((item) => item.room == roomName).length;
-  }
-
-  int getItemCountByCategory(String categoryName) {
-    return _items.where((item) => item.category == categoryName).length;
-  }
-
-  // Calculates the total value for the AppBar chip
-  double get totalValue {
-    return _items.fold(0.0, (sum, item) => sum + item.value);
-  }
-
-  // Load all items from SQLite
-  Future<void> fetchItems() async {
+  Future<void> initializeData() async {
     _isLoading = true;
     notifyListeners();
 
     try {
       _items = await DatabaseHelper.instance.readAllItems();
+      _rooms = await DatabaseHelper.instance.getRooms();
+      _categories = await DatabaseHelper.instance.getCategories();
     } catch (e) {
-      debugPrint('Error fetching items: $e');
+      debugPrint('Error initializing data: $e');
     } finally {
       _isLoading = false;
       notifyListeners();
     }
   }
 
-  // Add a new item and refresh the list
+  Future<void> refreshAfterImport() async {
+    await initializeData();
+  }
+
+  // --- SEARCH ---
+
+  void setSearchQuery(String query) {
+    _searchQuery = query;
+    notifyListeners();
+  }
+
+  List<Item> get filteredItems {
+    if (_searchQuery.isEmpty) return _items;
+    return _items.where((item) {
+      final searchLower = _searchQuery.toLowerCase();
+      return item.name.toLowerCase().contains(searchLower) ||
+          (item.room ?? '').toLowerCase().contains(searchLower) ||
+          (item.category ?? '').toLowerCase().contains(searchLower);
+    }).toList();
+  }
+
+  // --- ACTIONS ---
+
   Future<void> addItem(Item item) async {
     await DatabaseHelper.instance.create(item);
-    await fetchItems(); // Refresh the list from the source of truth
-  }
-
-  // Delete an item and refresh
-  Future<void> deleteItem(int id) async {
-    await DatabaseHelper.instance.delete(id);
-    await fetchItems();
-  }
-
-  int getItemsCountInRoom(String roomName) {
-    return _items.where((item) => item.room == roomName).length;
-  }
-
-  int getItemsCountInCategory(String categoryName) {
-    return _items.where((item) => item.category == categoryName).length;
+    _items = await DatabaseHelper.instance.readAllItems();
+    notifyListeners();
   }
 
   Future<void> updateItem(Item item) async {
     await DatabaseHelper.instance.update(item);
-    await fetchItems(); // Refresh the list so the UI shows the new data
+    _items = await DatabaseHelper.instance.readAllItems();
+    notifyListeners();
   }
 
+  Future<void> deleteItem(int id) async {
+    await DatabaseHelper.instance.delete(id);
+    _items = await DatabaseHelper.instance.readAllItems();
+    notifyListeners();
+  }
+
+  Future<void> addRoom(String name) async {
+    if (!_rooms.contains(name)) {
+      _rooms.add(name);
+      _rooms.sort();
+      await DatabaseHelper.instance.saveRooms(_rooms);
+      notifyListeners();
+    }
+  }
+
+  Future<void> removeRoom(String name) async {
+    _rooms.remove(name);
+    await DatabaseHelper.instance.saveRooms(_rooms);
+    notifyListeners();
+  }
+
+  Future<void> addCategory(String name) async {
+    if (!_categories.contains(name)) {
+      _categories.add(name);
+      _categories.sort();
+      await DatabaseHelper.instance.saveCategories(_categories);
+      notifyListeners();
+    }
+  }
+
+  Future<void> removeCategory(String name) async {
+    _categories.remove(name);
+    await DatabaseHelper.instance.saveCategories(_categories);
+    notifyListeners();
+  }
+
+  // --- HELPER COUNTS ---
+
+  int getItemsCountInRoom(String roomName) => _items.where((i) => i.room == roomName).length;
+  int getItemsCountInCategory(String catName) => _items.where((i) => i.category == catName).length;
+  double get totalValue => _items.fold(0.0, (sum, item) => sum + item.value);
+}
+
+============================================================
+PATH: .\lib\repositories\list_repository.dart
+============================================================
+
+import '../data/database_helper.dart';
+
+class ListRepository {
+  final DatabaseHelper _db = DatabaseHelper.instance;
+
+  // Rooms logic
+  Future<List<String>> fetchRooms() async {
+    final rooms = await _db.getRooms();
+    // Professional touch: If DB is empty, provide defaults but don't save them yet
+    if (rooms.isEmpty) {
+      return ['Living Room', 'Kitchen', 'Bedroom', 'Garage', 'Office'];
+    }
+    return rooms;
+  }
+
+  Future<void> updateRooms(List<String> rooms) => _db.saveRooms(rooms);
+
+  // Categories logic
+  Future<List<String>> fetchCategories() async {
+    final categories = await _db.getCategories();
+    if (categories.isEmpty) {
+      return ['Electronics', 'Furniture', 'Jewelry', 'Tools', 'Appliances'];
+    }
+    return categories;
+  }
+
+  Future<void> updateCategories(List<String> categories) => _db.saveCategories(categories);
 }
 
 ============================================================
@@ -405,9 +498,9 @@ import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
 import 'package:provider/provider.dart';
+import 'package:intl/intl.dart';
 import '../models/item.dart';
 import '../providers/inventory_provider.dart';
-import '../services/preferences_service.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import '../widgets/barcode_scanner.dart';
 
@@ -421,9 +514,7 @@ class AddItemScreen extends StatefulWidget {
 
 class _AddItemScreenState extends State<AddItemScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _prefs = PreferencesService();
 
-  // Text Controllers
   final _nameController = TextEditingController();
   final _valueController = TextEditingController();
   final _serialController = TextEditingController();
@@ -431,39 +522,36 @@ class _AddItemScreenState extends State<AddItemScreen> {
   final _modelController = TextEditingController();
   final _notesController = TextEditingController();
 
-  // State Management
   List<File> _imageFiles = [];
-  List<String> _rooms = [];
-  List<String> _categories = [];
+  List<int> _receiptIndices = [];
   String? _selectedRoom;
   String? _selectedCategory;
+  DateTime _purchaseDate = DateTime.now();
+  DateTime? _warrantyExpiry;
   bool _isSaving = false;
 
   @override
   void initState() {
     super.initState();
-
-    // 1. If editing, populate values immediately to avoid UI flickering
     if (widget.itemToEdit != null) {
       final item = widget.itemToEdit!;
       _nameController.text = item.name;
-      _valueController.text = item.value.toString();
+      _valueController.text = item.value == 0.0 ? '' : item.value.toString();
       _serialController.text = item.serialNumber ?? '';
       _brandController.text = item.brand ?? '';
       _modelController.text = item.model ?? '';
       _notesController.text = item.notes ?? '';
       _selectedRoom = item.room;
       _selectedCategory = item.category;
+      _purchaseDate = item.purchaseDate;
+      _warrantyExpiry = item.warrantyExpiry;
+      _receiptIndices = List.from(item.receiptIndices);
       _imageFiles = item.imagePaths.map((path) => File(path)).toList();
     }
-
-    // 2. Load preferences asynchronously
-    _loadPreferences();
   }
 
   @override
   void dispose() {
-    // FIX (Point 1): Prevent memory leaks by disposing all controllers
     _nameController.dispose();
     _valueController.dispose();
     _serialController.dispose();
@@ -473,105 +561,75 @@ class _AddItemScreenState extends State<AddItemScreen> {
     super.dispose();
   }
 
-  Future<void> _loadPreferences() async {
-    final r = await _prefs.getRooms();
-    final c = await _prefs.getCategories();
-
-    if (!mounted) return;
-
-    setState(() {
-      _rooms = r;
-      _categories = c;
-
-      // FIX (Point 2): Prevent clobbering. Only set defaults if selection is null.
-      if (_selectedRoom == null && _rooms.isNotEmpty) {
-        _selectedRoom = _rooms[0];
-      }
-      if (_selectedCategory == null && _categories.isNotEmpty) {
-        _selectedCategory = _categories[0];
-      }
-    });
-  }
-
   Future<void> _pickImage(ImageSource source) async {
     final picker = ImagePicker();
     final pickedFile = await picker.pickImage(source: source, imageQuality: 75);
-
     if (pickedFile != null) {
+      setState(() => _imageFiles.add(File(pickedFile.path)));
+    }
+  }
+
+  Future<void> _selectDate(BuildContext context, bool isPurchaseDate) async {
+    final DateTime? picked = await showDatePicker(
+      context: context,
+      initialDate: isPurchaseDate ? _purchaseDate : (_warrantyExpiry ?? DateTime.now()),
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2101),
+    );
+    if (picked != null) {
       setState(() {
-        _imageFiles.add(File(pickedFile.path));
+        if (isPurchaseDate) _purchaseDate = picked;
+        else _warrantyExpiry = picked;
       });
     }
   }
 
   Future<void> _saveItem() async {
-    if (_isSaving) return;
-    if (!_formKey.currentState!.validate()) return;
-
+    if (_isSaving || !_formKey.currentState!.validate()) return;
     if (_imageFiles.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please add at least one photo for insurance proof.')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('At least one photo is required.')));
       return;
     }
 
     setState(() => _isSaving = true);
-
     try {
       final appDir = await getApplicationDocumentsDirectory();
       List<String> savedPaths = [];
 
       for (var file in _imageFiles) {
-        // If file is already internal (Editing), don't re-compress
         if (file.path.contains(appDir.path)) {
           savedPaths.add(file.path);
         } else {
           final fileName = 'img_${DateTime.now().millisecondsSinceEpoch}_${path.basename(file.path)}';
           final targetPath = '${appDir.path}/$fileName';
-
           var result = await FlutterImageCompress.compressAndGetFile(
-            file.absolute.path,
-            targetPath,
-            quality: 70,
-            minWidth: 1024,
-            minHeight: 1024,
+            file.absolute.path, targetPath, quality: 70, minWidth: 1024, minHeight: 1024,
           );
-
-          if (result != null) {
-            savedPaths.add(result.path);
-          } else {
-            final savedImage = await file.copy(targetPath);
-            savedPaths.add(savedImage.path);
-          }
+          savedPaths.add(result?.path ?? (await file.copy(targetPath)).path);
         }
       }
 
       final newItem = Item(
         id: widget.itemToEdit?.id,
-        name: _nameController.text,
+        name: _nameController.text.trim(),
         imagePaths: savedPaths,
         value: double.tryParse(_valueController.text.replaceAll(',', '')) ?? 0.0,
-        purchaseDate: widget.itemToEdit?.purchaseDate ?? DateTime.now(),
-        serialNumber: _serialController.text,
-        brand: _brandController.text,
-        model: _modelController.text,
-        notes: _notesController.text,
-        room: _selectedRoom,
-        category: _selectedCategory,
+        purchaseDate: _purchaseDate,
+        warrantyExpiry: _warrantyExpiry,
+        serialNumber: _serialController.text.isEmpty ? null : _serialController.text,
+        brand: _brandController.text.isEmpty ? null : _brandController.text,
+        model: _modelController.text.isEmpty ? null : _modelController.text,
+        notes: _notesController.text.isEmpty ? null : _notesController.text,
+        room: (_selectedRoom == "None" || _selectedRoom == null) ? null : _selectedRoom,
+        category: (_selectedCategory == "None" || _selectedCategory == null) ? null : _selectedCategory,
+        receiptIndices: _receiptIndices,
       );
 
       final provider = Provider.of<InventoryProvider>(context, listen: false);
-      if (widget.itemToEdit == null) {
-        await provider.addItem(newItem);
-      } else {
-        await provider.updateItem(newItem);
-      }
-
+      widget.itemToEdit == null ? await provider.addItem(newItem) : await provider.updateItem(newItem);
       if (mounted) Navigator.pop(context);
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error saving: $e')));
-      }
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
     } finally {
       if (mounted) setState(() => _isSaving = false);
     }
@@ -579,68 +637,53 @@ class _AddItemScreenState extends State<AddItemScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // FIX (Point 15): Access the app theme for consistent UI colors
     final theme = Theme.of(context);
+    final provider = context.watch<InventoryProvider>();
+    final roomOptions = ["None", ...provider.rooms];
+    final categoryOptions = ["None", ...provider.categories];
 
     return Scaffold(
-      appBar: AppBar(title: Text(widget.itemToEdit == null ? 'Add Item Details' : 'Edit Item')),
-      body: _isSaving
-          ? const Center(child: CircularProgressIndicator())
-          : SingleChildScrollView(
+      appBar: AppBar(title: Text(widget.itemToEdit == null ? 'Add Item' : 'Edit Item')),
+      body: _isSaving ? const Center(child: CircularProgressIndicator()) : SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Form(
           key: _formKey,
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // PHOTO GALLERY
-              SizedBox(
-                height: 120,
-                child: ListView.builder(
-                  scrollDirection: Axis.horizontal,
-                  itemCount: _imageFiles.length + 1,
-                  itemBuilder: (ctx, i) {
-                    if (i == _imageFiles.length) return _buildAddPhotoButton();
-                    return _buildPhotoPreview(i);
-                  },
-                ),
-              ),
-              const SizedBox(height: 20),
-
-              _buildTextField(_nameController, 'Item Name', Icons.inventory_2),
+              _buildPhotoHeader(),
+              _buildPhotoGallery(theme),
+              const SizedBox(height: 24),
+              _buildTextField(_nameController, 'Item Name', Icons.inventory_2, isRequired: true),
               _buildTextField(_valueController, 'Estimated Value (\$)', Icons.monetization_on, isNumber: true),
 
               Row(
                 children: [
-                  Expanded(child: _buildDropdown('Room', _selectedRoom, _rooms, (val) => setState(() => _selectedRoom = val))),
-                  const SizedBox(width: 10),
-                  Expanded(child: _buildDropdown('Category', _selectedCategory, _categories, (val) => setState(() => _selectedCategory = val))),
+                  Expanded(child: _buildDatePicker('Purchase Date', _purchaseDate, () => _selectDate(context, true))),
+                  const SizedBox(width: 12),
+                  Expanded(child: _buildDatePicker('Warranty Until', _warrantyExpiry, () => _selectDate(context, false), isOptional: true)),
+                ],
+              ),
+
+              Row(
+                children: [
+                  Expanded(child: _buildDropdown('Room', _selectedRoom, roomOptions, (val) => setState(() => _selectedRoom = val))),
+                  const SizedBox(width: 12),
+                  Expanded(child: _buildDropdown('Category', _selectedCategory, categoryOptions, (val) => setState(() => _selectedCategory = val))),
                 ],
               ),
 
               Row(
                 children: [
                   Expanded(child: _buildTextField(_brandController, 'Brand', Icons.factory)),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: 12),
                   Expanded(child: _buildTextField(_modelController, 'Model #', Icons.label_important)),
                 ],
               ),
-
               _buildScanTextField(_serialController, 'Serial Number / UPC', Icons.qr_code_scanner),
               _buildTextField(_notesController, 'Notes / Description', Icons.description, maxLines: 3),
-
-              const SizedBox(height: 30),
-
-              ElevatedButton.icon(
-                onPressed: _saveItem,
-                icon: const Icon(Icons.check_circle),
-                label: Text(widget.itemToEdit == null ? 'SAVE TO INVENTORY' : 'UPDATE ITEM', style: const TextStyle(fontSize: 16)),
-                style: ElevatedButton.styleFrom(
-                  minimumSize: const Size(double.infinity, 55),
-                  // Using theme colors
-                  backgroundColor: theme.colorScheme.primary,
-                  foregroundColor: theme.colorScheme.onPrimary,
-                ),
-              ),
+              const SizedBox(height: 32),
+              _buildSaveButton(theme),
             ],
           ),
         ),
@@ -648,111 +691,161 @@ class _AddItemScreenState extends State<AddItemScreen> {
     );
   }
 
-  // --- UI HELPERS ---
+  // --- UI COMPONENTS ---
 
-  Widget _buildScanTextField(TextEditingController controller, String label, IconData icon) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: TextFormField(
-        controller: controller,
-        decoration: InputDecoration(
-          labelText: label,
-          prefixIcon: Icon(icon),
-          suffixIcon: IconButton(
-            icon: Icon(Icons.camera_alt, color: Theme.of(context).colorScheme.primary),
-            tooltip: 'Scan Barcode',
-            onPressed: () async {
-              final String? scannedCode = await Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const BarcodeScannerWidget()),
-              );
-              if (scannedCode != null && mounted) {
-                setState(() => controller.text = scannedCode);
-              }
-            },
+  Widget _buildPhotoHeader() {
+    return const Padding(
+      padding: EdgeInsets.only(bottom: 8),
+      child: Text("Photos & Receipts *", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+    );
+  }
+
+  Widget _buildPhotoGallery(ThemeData theme) {
+    return SizedBox(
+      height: 140,
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        itemCount: _imageFiles.length + 1,
+        itemBuilder: (ctx, i) {
+          if (i == _imageFiles.length) return _buildAddPhotoButton(theme);
+          bool isReceipt = _receiptIndices.contains(i);
+          return _buildPhotoPreview(i, isReceipt);
+        },
+      ),
+    );
+  }
+
+  Widget _buildPhotoPreview(int index, bool isReceipt) {
+    return Stack(
+      children: [
+        Container(
+          margin: const EdgeInsets.only(right: 12, top: 10),
+          width: 110,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            image: DecorationImage(image: FileImage(_imageFiles[index]), fit: BoxFit.cover),
+            border: Border.all(color: isReceipt ? Colors.green : Colors.grey.shade300, width: 2),
           ),
-          border: const OutlineInputBorder(),
+        ),
+        // Delete Button
+        Positioned(right: 0, top: 0, child: GestureDetector(
+          onTap: () => setState(() {
+            _imageFiles.removeAt(index);
+            _receiptIndices.remove(index);
+            _receiptIndices = _receiptIndices.map((e) => e > index ? e - 1 : e).toList();
+          }),
+          child: const CircleAvatar(radius: 12, backgroundColor: Colors.red, child: Icon(Icons.close, size: 16, color: Colors.white)),
+        )),
+        // Receipt Toggle
+        Positioned(left: 5, bottom: 5, child: GestureDetector(
+          onTap: () => setState(() => _receiptIndices.contains(index) ? _receiptIndices.remove(index) : _receiptIndices.add(index)),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(color: isReceipt ? Colors.green : Colors.black54, borderRadius: BorderRadius.circular(8)),
+            child: Row(children: [
+              Icon(Icons.receipt_long, size: 12, color: Colors.white),
+              const SizedBox(width: 4),
+              Text(isReceipt ? "Receipt" : "Tag Receipt", style: const TextStyle(color: Colors.white, fontSize: 10)),
+            ]),
+          ),
+        )),
+      ],
+    );
+  }
+
+  Widget _buildDatePicker(String label, DateTime? date, VoidCallback onTap, {bool isOptional = false}) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: InkWell(
+        onTap: onTap,
+        child: InputDecorator(
+          decoration: InputDecoration(labelText: isOptional ? '$label (Optional)' : label, border: const OutlineInputBorder()),
+          child: Text(date == null ? 'Select Date' : DateFormat('MMM d, yyyy').format(date)),
         ),
       ),
     );
   }
 
-  Widget _buildTextField(TextEditingController controller, String label, IconData icon, {bool isNumber = false, int maxLines = 1}) {
+  // (Remaining helpers: _buildTextField, _buildDropdown, _buildScanTextField, _buildAddPhotoButton, _showPickerOptions are kept from previous versions)
+  // [Truncated for brevity, but include identical logic to the previous full file gen]
+
+  Widget _buildSaveButton(ThemeData theme) {
+    return ElevatedButton.icon(
+      onPressed: _saveItem,
+      icon: const Icon(Icons.check_circle),
+      label: const Text('SAVE TO INVENTORY', style: TextStyle(fontWeight: FontWeight.bold)),
+      style: ElevatedButton.styleFrom(
+        minimumSize: const Size(double.infinity, 60),
+        backgroundColor: theme.colorScheme.primary,
+        foregroundColor: theme.colorScheme.onPrimary,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+    );
+  }
+
+  Widget _buildTextField(TextEditingController controller, String label, IconData icon, {bool isNumber = false, int maxLines = 1, bool isRequired = false}) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.only(bottom: 16),
       child: TextFormField(
         controller: controller,
         maxLines: maxLines,
         keyboardType: isNumber ? const TextInputType.numberWithOptions(decimal: true) : TextInputType.text,
         decoration: InputDecoration(
-          labelText: label,
+          labelText: isRequired ? label : '$label (Optional)',
           prefixIcon: Icon(icon),
-          border: const OutlineInputBorder(),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
         ),
-        validator: (v) => v == null || v.isEmpty ? 'Please enter $label' : null,
+        validator: (v) => (isRequired && (v == null || v.trim().isEmpty)) ? 'Please enter $label' : null,
       ),
     );
   }
 
   Widget _buildDropdown(String label, String? value, List<String> items, Function(String?) onChanged) {
+    final effectiveValue = items.contains(value) ? value : "None";
     return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.only(bottom: 16),
       child: DropdownButtonFormField<String>(
-        value: value,
-        decoration: InputDecoration(labelText: label, border: const OutlineInputBorder()),
+        value: effectiveValue,
+        decoration: InputDecoration(labelText: '$label (Optional)', border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
         items: items.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
         onChanged: onChanged,
       ),
     );
   }
 
-  Widget _buildPhotoPreview(int index) {
-    return Stack(
-      children: [
-        Container(
-          margin: const EdgeInsets.only(right: 12),
-          width: 100,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(12),
-            image: DecorationImage(image: FileImage(_imageFiles[index]), fit: BoxFit.cover),
-            border: Border.all(color: Theme.of(context).colorScheme.primary.withOpacity(0.3)),
+  Widget _buildScanTextField(TextEditingController controller, String label, IconData icon) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: TextFormField(
+        controller: controller,
+        decoration: InputDecoration(
+          labelText: '$label (Optional)',
+          prefixIcon: Icon(icon),
+          suffixIcon: IconButton(
+            icon: Icon(Icons.camera_alt, color: Theme.of(context).colorScheme.primary),
+            onPressed: () async {
+              final String? scannedCode = await Navigator.push(context, MaterialPageRoute(builder: (context) => const BarcodeScannerWidget()));
+              if (scannedCode != null && mounted) setState(() => controller.text = scannedCode);
+            },
           ),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
         ),
-        Positioned(
-          right: 5,
-          top: -5,
-          child: GestureDetector(
-            onTap: () => setState(() => _imageFiles.removeAt(index)),
-            child: const CircleAvatar(
-              radius: 12,
-              backgroundColor: Colors.red,
-              child: Icon(Icons.close, size: 16, color: Colors.white),
-            ),
-          ),
-        ),
-      ],
+      ),
     );
   }
 
-  Widget _buildAddPhotoButton() {
-    final theme = Theme.of(context);
+  Widget _buildAddPhotoButton(ThemeData theme) {
     return GestureDetector(
       onTap: () => _showPickerOptions(),
       child: Container(
+        margin: const EdgeInsets.only(top: 10),
         width: 100,
-        decoration: BoxDecoration(
-          color: theme.colorScheme.surfaceVariant,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: theme.colorScheme.outlineVariant),
-        ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.add_a_photo, color: theme.colorScheme.primary),
-            const SizedBox(height: 4),
-            Text("Add Photo", style: TextStyle(fontSize: 12, color: theme.colorScheme.primary)),
-          ],
-        ),
+        decoration: BoxDecoration(color: theme.colorScheme.surfaceVariant, borderRadius: BorderRadius.circular(12), border: Border.all(color: theme.colorScheme.outlineVariant)),
+        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          Icon(Icons.add_a_photo, color: theme.colorScheme.primary),
+          const SizedBox(height: 4),
+          Text("Add Photo", style: TextStyle(fontSize: 12, color: theme.colorScheme.primary)),
+        ]),
       ),
     );
   }
@@ -763,21 +856,10 @@ class _AddItemScreenState extends State<AddItemScreen> {
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) => Padding(
         padding: const EdgeInsets.symmetric(vertical: 20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.camera_alt),
-              title: const Text('Take Photo with Camera'),
-              onTap: () { Navigator.pop(ctx); _pickImage(ImageSource.camera); },
-            ),
-            ListTile(
-              leading: const Icon(Icons.photo_library),
-              title: const Text('Import from Gallery'),
-              onTap: () { Navigator.pop(ctx); _pickImage(ImageSource.gallery); },
-            ),
-          ],
-        ),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(leading: const Icon(Icons.camera_alt), title: const Text('Take Photo'), onTap: () { Navigator.pop(ctx); _pickImage(ImageSource.camera); }),
+          ListTile(leading: const Icon(Icons.photo_library), title: const Text('From Gallery'), onTap: () { Navigator.pop(ctx); _pickImage(ImageSource.gallery); }),
+        ]),
       ),
     );
   }
@@ -794,10 +876,10 @@ import 'package:home_inventory/screens/item_detail_screen.dart';
 import 'package:home_inventory/screens/settings_screen.dart';
 import 'package:home_inventory/services/pdf_service.dart';
 import 'package:home_inventory/services/zip_service.dart';
+import 'package:home_inventory/services/export_service.dart'; // We'll create this next
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 import '../providers/inventory_provider.dart';
-
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -821,29 +903,71 @@ class _HomeScreenState extends State<HomeScreen> {
 
     showModalBottomSheet(
       context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
       builder: (ctx) => SafeArea(
-        child: Wrap(
-          children: [
-            ListTile(
-              leading: const Icon(Icons.picture_as_pdf, color: Colors.red),
-              title: const Text('Export PDF Report'),
-              subtitle: const Text('Best for insurance claims'),
-              onTap: () {
-                Navigator.pop(ctx);
-                PdfService.generateInventoryReport(provider.items);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.folder_zip, color: Colors.orange),
-              title: const Text('Export ZIP Backup'),
-              subtitle: const Text('Includes all full-resolution photos'),
-              onTap: () {
-                Navigator.pop(ctx);
-                final allImages = provider.items.expand((item) => item.imagePaths).toList();
-                ZipService.createFullBackup(allImages);
-              },
-            ),
-          ],
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                "Export Inventory",
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 15),
+              ListTile(
+                leading: const CircleAvatar(
+                  backgroundColor: Colors.redAccent,
+                  child: Icon(Icons.picture_as_pdf, color: Colors.white),
+                ),
+                title: const Text('Professional PDF Report'),
+                subtitle: const Text('Includes photos and receipt tags'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  PdfService.generateInventoryReport(provider.items);
+                },
+              ),
+              ListTile(
+                leading: const CircleAvatar(
+                  backgroundColor: Colors.green,
+                  child: Icon(Icons.table_chart, color: Colors.white),
+                ),
+                title: const Text('CSV Spreadsheet'),
+                subtitle: const Text('Best for Excel or Google Sheets'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  ExportService.shareAsCsv(provider.items);
+                },
+              ),
+              ListTile(
+                leading: const CircleAvatar(
+                  backgroundColor: Colors.blue,
+                  child: Icon(Icons.code, color: Colors.white),
+                ),
+                title: const Text('JSON Data File'),
+                subtitle: const Text('Raw data backup'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  ExportService.shareAsJson(provider.items);
+                },
+              ),
+              ListTile(
+                leading: const CircleAvatar(
+                  backgroundColor: Colors.orange,
+                  child: Icon(Icons.folder_zip, color: Colors.white),
+                ),
+                title: const Text('Full ZIP Backup'),
+                subtitle: const Text('Includes all original photos'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  final allImages = provider.items.expand((item) => item.imagePaths).toList();
+                  ZipService.createFullBackup(allImages);
+                },
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -851,7 +975,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // listen: false here because we use Consumer for the parts that need to rebuild
     final inventoryProvider = Provider.of<InventoryProvider>(context, listen: false);
 
     return Scaffold(
@@ -863,14 +986,11 @@ class _HomeScreenState extends State<HomeScreen> {
           decoration: const InputDecoration(
             hintText: 'Search items, rooms...',
             border: InputBorder.none,
-            hintStyle: TextStyle(color: Colors.blueGrey),
           ),
-          style: const TextStyle(fontSize: 18),
           onChanged: (val) => inventoryProvider.setSearchQuery(val),
         )
             : const Text('My Inventory'),
         actions: [
-          // 1. Search Toggle Button
           IconButton(
             icon: Icon(_isSearching ? Icons.close : Icons.search),
             onPressed: () {
@@ -883,42 +1003,36 @@ class _HomeScreenState extends State<HomeScreen> {
               });
             },
           ),
-          // 2. Export/Backup Button (Hidden during search for space)
           if (!_isSearching)
             IconButton(
-              icon: const Icon(Icons.share),
-              tooltip: 'Export Backup',
+              icon: const Icon(Icons.ios_share), // Using a standard share icon
+              tooltip: 'Export',
               onPressed: () => _showExportMenu(context),
             ),
-          // 3. Settings Button
           if (!_isSearching)
             IconButton(
               icon: const Icon(Icons.settings),
-              onPressed: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute(builder: (context) => const SettingsScreen()),
-                );
-              },
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (context) => const SettingsScreen()),
+              ),
             ),
-          // 4. Total Value Pill
+          // Total Value Pill
           Padding(
-            padding: const EdgeInsets.only(right: 16.0, left: 8.0),
+            padding: const EdgeInsets.only(right: 8.0),
             child: Center(
               child: Consumer<InventoryProvider>(
                 builder: (context, provider, child) {
-                  final format = NumberFormat.simpleCurrency();
                   return Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                     decoration: BoxDecoration(
-                      color: Colors.green[100],
-                      borderRadius: BorderRadius.circular(20),
+                      color: Colors.green.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(12),
                     ),
                     child: Text(
-                      format.format(provider.totalValue),
-                      style: TextStyle(
+                      NumberFormat.simpleCurrency().format(provider.totalValue),
+                      style: const TextStyle(
                         fontWeight: FontWeight.bold,
-                        fontSize: 14,
-                        color: Colors.green[800],
+                        color: Colors.green,
                       ),
                     ),
                   );
@@ -948,10 +1062,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(height: 16),
                   Text(
-                    _isSearching
-                        ? 'No items match your search.'
-                        : 'Your inventory is empty.\nTap the button below to add an item.',
-                    textAlign: TextAlign.center,
+                    _isSearching ? 'No results found.' : 'Inventory is empty.',
                     style: const TextStyle(color: Colors.grey),
                   ),
                 ],
@@ -961,63 +1072,36 @@ class _HomeScreenState extends State<HomeScreen> {
 
           return ListView.builder(
             itemCount: displayItems.length,
-            padding: const EdgeInsets.all(8),
+            padding: const EdgeInsets.symmetric(vertical: 8),
             itemBuilder: (context, index) {
               final item = displayItems[index];
-              return Card(
-                elevation: 2,
-                margin: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
-                child: ListTile(
-                  contentPadding: const EdgeInsets.all(10),
-                  leading: ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: SizedBox(
-                      width: 60,
-                      height: 60,
-                      child: item.imagePaths.isNotEmpty
-                          ? Image.file(
-                        File(item.imagePaths[0]),
-                        fit: BoxFit.cover,
-                        cacheWidth: 150,
-                        // FIXED: Changed 'cite' back to 'ctx'
-                        errorBuilder: (ctx, err, stack) =>
-                        const Icon(Icons.broken_image, color: Colors.grey),
-                      )
-                          : Container(
-                        color: Colors.grey[200],
-                        child: const Icon(Icons.image_not_supported, color: Colors.grey),
-                      ),
-                    ),
+              return ListTile(
+                leading: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: SizedBox(
+                    width: 50,
+                    height: 50,
+                    child: item.imagePaths.isNotEmpty
+                        ? Image.file(
+                      File(item.imagePaths[0]),
+                      fit: BoxFit.cover,
+                      cacheWidth: 100,
+                      errorBuilder: (ctx, err, stack) =>
+                      const Icon(Icons.broken_image),
+                    )
+                        : Container(color: Colors.grey[200]),
                   ),
-                  title: Text(
-                    item.name,
-                    style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                title: Text(item.name, style: const TextStyle(fontWeight: FontWeight.w600)),
+                subtitle: Text("${item.room ?? 'Unassigned'} • ${item.category ?? 'General'}"),
+                trailing: Text(
+                  NumberFormat.simpleCurrency().format(item.value),
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (context) => ItemDetailScreen(itemId: item.id!),
                   ),
-                  subtitle: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(item.room ?? 'Unassigned Room'),
-                      Text(
-                        DateFormat.yMMMd().format(item.purchaseDate),
-                        style: const TextStyle(fontSize: 12),
-                      ),
-                    ],
-                  ),
-                  trailing: Text(
-                    NumberFormat.simpleCurrency().format(item.value),
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 15,
-                      color: Colors.blueGrey,
-                    ),
-                  ),
-                  onTap: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (context) => ItemDetailScreen(item: item),
-                      ),
-                    );
-                  },
                 ),
               );
             },
@@ -1025,12 +1109,10 @@ class _HomeScreenState extends State<HomeScreen> {
         },
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () {
-          Navigator.of(context).push(
-            MaterialPageRoute(builder: (context) => const AddItemScreen()),
-          );
-        },
-        icon: const Icon(Icons.add_a_photo),
+        onPressed: () => Navigator.of(context).push(
+          MaterialPageRoute(builder: (context) => const AddItemScreen()),
+        ),
+        icon: const Icon(Icons.add),
         label: const Text("Add Item"),
       ),
     );
@@ -1047,37 +1129,47 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import '../models/item.dart';
 import '../providers/inventory_provider.dart';
-import 'add_item_screen.dart'; // Required to navigate to Edit mode
+import 'add_item_screen.dart';
 
 class ItemDetailScreen extends StatelessWidget {
-  final Item item;
-  const ItemDetailScreen({super.key, required this.item});
+  final int itemId; // Pass ID instead of full object for better state syncing
+  const ItemDetailScreen({super.key, required this.itemId});
 
   @override
   Widget build(BuildContext context) {
-    final currencyFormat = NumberFormat.simpleCurrency();
-    final dateFormat = DateFormat.yMMMMd();
+    final theme = Theme.of(context);
+
+    // Listen to the provider. If the item is edited, this will rebuild automatically.
+    final provider = context.watch<InventoryProvider>();
+    final item = provider.items.firstWhere(
+          (i) => i.id == itemId,
+      orElse: () => Item( // Fallback if item is deleted
+          name: 'Deleted',
+          imagePaths: [],
+          value: 0,
+          purchaseDate: DateTime.now()
+      ),
+    );
+
+    if (item.name == 'Deleted') {
+      return const Scaffold(body: Center(child: Text("Item no longer exists.")));
+    }
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Item Details'),
+        title: Text(item.name),
         actions: [
-          // --- EDIT BUTTON ---
           IconButton(
             icon: const Icon(Icons.edit_outlined),
             tooltip: 'Edit Item',
-            onPressed: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (context) => AddItemScreen(itemToEdit: item),
-                ),
-              );
-            },
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => AddItemScreen(itemToEdit: item)),
+            ),
           ),
-          // --- DELETE BUTTON ---
           IconButton(
-            icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
-            onPressed: () => _confirmDelete(context),
+            icon: const Icon(Icons.delete_outline),
+            onPressed: () => _confirmDelete(context, provider, item),
           ),
         ],
       ),
@@ -1085,93 +1177,18 @@ class ItemDetailScreen extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // --- PHOTO GALLERY CAROUSEL ---
-            if (item.imagePaths.isNotEmpty)
-              SizedBox(
-                height: 350,
-                child: PageView.builder(
-                  itemCount: item.imagePaths.length,
-                  itemBuilder: (ctx, i) {
-                    return Container(
-                      width: MediaQuery.of(context).size.width,
-                      color: Colors.black,
-                      child: Image.file(
-                        File(item.imagePaths[i]),
-                        fit: BoxFit.contain,
-                      ),
-                    );
-                  },
-                ),
-              )
-            else
-              Container(
-                height: 250,
-                width: double.infinity,
-                color: Colors.grey[200],
-                child: const Icon(Icons.image_not_supported, size: 80, color: Colors.grey),
-              ),
-
-            if (item.imagePaths.length > 1)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 8),
-                child: Center(child: Text('Swipe for more photos', style: TextStyle(color: Colors.grey, fontSize: 12))),
-              ),
-
+            _buildImageGallery(context, item),
             Padding(
-              padding: const EdgeInsets.all(20.0),
+              padding: const EdgeInsets.all(16.0),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Item Name and Price Header
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Expanded(
-                        child: Text(
-                          item.name,
-                          style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
-                        ),
-                      ),
-                      Text(
-                        currencyFormat.format(item.value),
-                        style: const TextStyle(fontSize: 24, color: Colors.green, fontWeight: FontWeight.bold),
-                      ),
-                    ],
-                  ),
+                  _buildPriceAndDate(theme, item),
+                  const Divider(height: 32),
+                  if (item.warrantyExpiry != null) _buildWarrantyCard(theme, item),
+                  _buildInfoGrid(theme, item),
                   const SizedBox(height: 20),
-
-                  // Info Cards
-                  _buildSectionTitle('LOCATION & CATEGORY'),
-                  Row(
-                    children: [
-                      _buildChip(item.room ?? 'No Room', Icons.meeting_room),
-                      const SizedBox(width: 8),
-                      _buildChip(item.category ?? 'No Category', Icons.category),
-                    ],
-                  ),
-
-                  const SizedBox(height: 24),
-                  _buildSectionTitle('PRODUCT SPECIFICATIONS'),
-                  _buildDetailRow(Icons.business, 'Brand', item.brand),
-                  _buildDetailRow(Icons.label_important, 'Model', item.model),
-                  _buildDetailRow(Icons.qr_code, 'Serial #', item.serialNumber),
-                  _buildDetailRow(Icons.calendar_today, 'Added On', dateFormat.format(item.purchaseDate)),
-
-                  const SizedBox(height: 24),
-                  _buildSectionTitle('NOTES'),
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: Colors.blueGrey[50],
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Text(
-                      (item.notes == null || item.notes!.isEmpty) ? 'No notes provided.' : item.notes!,
-                      style: const TextStyle(fontSize: 16, height: 1.5),
-                    ),
-                  ),
-                  const SizedBox(height: 40),
+                  if (item.notes != null && item.notes!.isNotEmpty) _buildNotes(theme, item),
                 ],
               ),
             ),
@@ -1181,61 +1198,228 @@ class ItemDetailScreen extends StatelessWidget {
     );
   }
 
-  // --- UI HELPERS ---
-
-  Widget _buildSectionTitle(String title) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Text(
-        title,
-        style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.blueGrey[700], letterSpacing: 1.1),
-      ),
-    );
-  }
-
-  Widget _buildChip(String label, IconData icon) {
-    return Chip(
-      avatar: Icon(icon, size: 16, color: Colors.blueGrey),
-      label: Text(label),
-      backgroundColor: Colors.blueGrey[50],
-      side: BorderSide.none,
-    );
-  }
-
-  Widget _buildDetailRow(IconData icon, String label, String? value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8.0),
-      child: Row(
-        children: [
-          Icon(icon, size: 20, color: Colors.blueGrey[300]),
-          const SizedBox(width: 16),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(label, style: TextStyle(color: Colors.grey[600], fontSize: 12)),
-              Text(value ?? '--', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
-            ],
+  void _confirmDelete(BuildContext context, InventoryProvider provider, Item item) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Delete Item?"),
+        content: Text("Are you sure you want to remove ${item.name}?"),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("CANCEL")),
+          TextButton(
+            onPressed: () {
+              provider.deleteItem(item.id!);
+              Navigator.pop(ctx); // Close dialog
+              Navigator.pop(context); // Return to list
+            },
+            child: const Text("DELETE", style: TextStyle(color: Colors.red)),
           ),
         ],
       ),
     );
   }
 
-  void _confirmDelete(BuildContext context) {
+  Widget _buildImageGallery(BuildContext context, Item item) {
+    if (item.imagePaths.isEmpty) return const SizedBox.shrink();
+    return SizedBox(
+      height: 300,
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        itemCount: item.imagePaths.length,
+        itemBuilder: (context, index) {
+          final bool isReceipt = item.receiptIndices.contains(index);
+          return Stack(
+            children: [
+              Container(
+                width: MediaQuery.of(context).size.width * 0.85,
+                margin: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(15),
+                  image: DecorationImage(
+                    image: FileImage(File(item.imagePaths[index])),
+                    fit: BoxFit.cover,
+                  ),
+                ),
+              ),
+              if (isReceipt)
+                Positioned(
+                  top: 20, left: 20,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.green.withOpacity(0.9),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: const Row(
+                      children: [
+                        Icon(Icons.receipt_long, color: Colors.white, size: 16),
+                        SizedBox(width: 4),
+                        Text("RECEIPT", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildWarrantyCard(ThemeData theme, Item item) {
+    final now = DateTime.now();
+    final isExpired = item.warrantyExpiry!.isBefore(now);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 20),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: isExpired ? Colors.red.shade50 : Colors.blue.shade50,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: isExpired ? Colors.red.shade200 : Colors.blue.shade200),
+      ),
+      child: Row(
+        children: [
+          Icon(isExpired ? Icons.warning_amber_rounded : Icons.verified_user_outlined, color: isExpired ? Colors.red : Colors.blue),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(isExpired ? "Warranty Expired" : "Under Warranty", style: TextStyle(fontWeight: FontWeight.bold, color: isExpired ? Colors.red.shade900 : Colors.blue.shade900)),
+                Text("Until ${DateFormat('MMM d, yyyy').format(item.warrantyExpiry!)}", style: const TextStyle(fontSize: 13)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPriceAndDate(ThemeData theme, Item item) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text("Value", style: TextStyle(fontSize: 12, color: Colors.grey)),
+          Text(NumberFormat.currency(symbol: "\$").format(item.value), style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold, color: theme.colorScheme.primary)),
+        ]),
+        Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+          const Text("Purchased", style: TextStyle(fontSize: 12, color: Colors.grey)),
+          Text(DateFormat('MMM d, yyyy').format(item.purchaseDate), style: theme.textTheme.titleMedium),
+        ]),
+      ],
+    );
+  }
+
+  Widget _buildInfoGrid(ThemeData theme, Item item) {
+    return GridView.count(
+      shrinkWrap: true, physics: const NeverScrollableScrollPhysics(),
+      crossAxisCount: 2, childAspectRatio: 3,
+      children: [
+        _buildInfoTile("Room", item.room ?? "Unassigned"),
+        _buildInfoTile("Category", item.category ?? "General"),
+        _buildInfoTile("Brand", item.brand ?? "N/A"),
+        _buildInfoTile("Model", item.model ?? "N/A"),
+      ],
+    );
+  }
+
+  Widget _buildInfoTile(String label, String value) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [
+      Text(label, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+      Text(value, style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 14), overflow: TextOverflow.ellipsis),
+    ]);
+  }
+
+  Widget _buildNotes(ThemeData theme, Item item) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const Text("Notes", style: TextStyle(fontWeight: FontWeight.bold)),
+      const SizedBox(height: 4),
+      Text(item.notes!, style: const TextStyle(color: Colors.black87)),
+    ]);
+  }
+}
+
+============================================================
+PATH: .\lib\screens\list_management_screen.dart
+============================================================
+
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../providers/inventory_provider.dart';
+
+class ListManagementScreen extends StatelessWidget {
+  final bool isRoom;
+  const ListManagementScreen({super.key, required this.isRoom});
+
+  @override
+  Widget build(BuildContext context) {
+    final provider = context.watch<InventoryProvider>();
+    final items = isRoom ? provider.rooms : provider.categories;
+
+    return Scaffold(
+      appBar: AppBar(title: Text(isRoom ? 'Manage Rooms' : 'Manage Categories')),
+      body: items.isEmpty
+          ? const Center(child: Text('No items yet.'))
+          : ListView.builder(
+        itemCount: items.length,
+        itemBuilder: (context, index) {
+          final name = items[index];
+          return ListTile(
+            title: Text(name),
+            trailing: IconButton(
+              icon: const Icon(Icons.delete_outline, color: Colors.red),
+              onPressed: () => _confirmDelete(context, name, provider),
+            ),
+          );
+        },
+      ),
+      floatingActionButton: FloatingActionButton(
+        child: const Icon(Icons.add),
+        onPressed: () => _showAddDialog(context, provider),
+      ),
+    );
+  }
+
+  void _showAddDialog(BuildContext context, InventoryProvider provider) {
+    final controller = TextEditingController();
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Delete Item?'),
-        content: const Text('This will permanently remove this record and all associated photos.'),
+        title: Text(isRoom ? 'Add Room' : 'Add Category'),
+        content: TextField(controller: controller, autofocus: true),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
           TextButton(
             onPressed: () {
-              Provider.of<InventoryProvider>(context, listen: false).deleteItem(item.id!);
+              if (isRoom) provider.addRoom(controller.text);
+              else provider.addCategory(controller.text);
               Navigator.pop(ctx);
-              Navigator.pop(context);
             },
-            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _confirmDelete(BuildContext context, String name, InventoryProvider provider) {
+    int count = isRoom ? provider.getItemsCountInRoom(name) : provider.getItemsCountInCategory(name);
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete?'),
+        content: Text('"$name" is used by $count items. Remove from selection list?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('No')),
+          TextButton(
+            onPressed: () {
+              if (isRoom) provider.removeRoom(name);
+              else provider.removeCategory(name);
+              Navigator.pop(ctx);
+            },
+            child: const Text('Yes'),
           ),
         ],
       ),
@@ -1248,198 +1432,133 @@ PATH: .\lib\screens\settings_screen.dart
 ============================================================
 
 import 'package:flutter/material.dart';
-import '../providers/inventory_provider.dart';
-import '../services/preferences_service.dart';
 import 'package:provider/provider.dart';
+import 'dart:io';
+import 'package:file_picker/file_picker.dart';
+import '../providers/inventory_provider.dart';
+import '../services/zip_service.dart';
+import 'list_management_screen.dart'; // We will create this next
 
-class SettingsScreen extends StatefulWidget {
+class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
 
   @override
-  State<SettingsScreen> createState() => _SettingsScreenState();
-}
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
 
-class _SettingsScreenState extends State<SettingsScreen> {
-  final _prefs = PreferencesService();
-  List<String> _rooms = [];
-  List<String> _categories = [];
-
-  @override
-  void initState() {
-    super.initState();
-    _refreshLists();
-  }
-
-  Future<void> _refreshLists() async {
-    final r = await _prefs.getRooms();
-    final c = await _prefs.getCategories();
-    if (mounted) {
-      setState(() {
-        _rooms = r;
-        _categories = c;
-      });
-    }
-  }
-
-  // --- LOGIC ---
-
-  void _showAddDialog(bool isRoom) {
-    final controller = TextEditingController();
-    final colorScheme = Theme.of(context).colorScheme;
-
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(isRoom ? 'Add New Room' : 'Add New Category'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          textCapitalization: TextCapitalization.words,
-          decoration: InputDecoration(
-            hintText: isRoom ? 'e.g. Attic' : 'e.g. Collectibles',
-            border: const OutlineInputBorder(),
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          ElevatedButton(
-            onPressed: () async {
-              if (controller.text.trim().isNotEmpty) {
-                final text = controller.text.trim();
-                isRoom ? await _prefs.saveRooms([..._rooms, text]) : await _prefs.saveCategories([..._categories, text]);
-                _refreshLists();
-                if (mounted) Navigator.pop(ctx);
+    return Scaffold(
+      appBar: AppBar(title: const Text('Settings')),
+      body: ListView(
+        children: [
+          _buildSectionHeader(context, 'Data Management'),
+          _buildTile(
+            context,
+            icon: Icons.cloud_upload_outlined,
+            color: Colors.blue,
+            title: 'Export Backup',
+            subtitle: 'Create a .zip file with all data and photos',
+            onTap: () async {
+              final provider = Provider.of<InventoryProvider>(context, listen: false);
+              final allImages = provider.items.expand((item) => item.imagePaths).toList();
+              File? zip = await ZipService.createFullBackup(allImages);
+              if (zip != null && context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Backup created at: ${zip.path}')),
+                );
               }
             },
-            child: const Text('Add'),
+          ),
+          _buildTile(
+            context,
+            icon: Icons.file_download_outlined,
+            color: Colors.orange,
+            title: 'Import Backup',
+            subtitle: 'Restore inventory from another device',
+            onTap: () => _handleImport(context),
+          ),
+          const Divider(),
+          _buildSectionHeader(context, 'Organization'),
+          _buildTile(
+            context,
+            icon: Icons.meeting_room_outlined,
+            color: theme.colorScheme.primary,
+            title: 'Manage Rooms',
+            subtitle: 'Add or remove locations in your home',
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const ListManagementScreen(isRoom: true)),
+            ),
+          ),
+          _buildTile(
+            context,
+            icon: Icons.style_outlined,
+            color: theme.colorScheme.primary,
+            title: 'Manage Categories',
+            subtitle: 'Define item types (Electronics, Tools, etc.)',
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const ListManagementScreen(isRoom: false)),
+            ),
           ),
         ],
       ),
     );
   }
 
-  void _handleDelete(bool isRoom, String itemName) async {
-    final inventory = Provider.of<InventoryProvider>(context, listen: false);
-
-    // Using the count logic we discussed
-    int count = isRoom
-        ? inventory.items.where((i) => i.room == itemName).length
-        : inventory.items.where((i) => i.category == itemName).length;
-
-    if (count > 0) {
-      _showDeleteWarning(itemName, count, isRoom);
-    } else {
-      _performDelete(isRoom, itemName);
-    }
+  Widget _buildSectionHeader(BuildContext context, String title) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
+      child: Text(
+        title.toUpperCase(),
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.bold,
+          color: Theme.of(context).colorScheme.secondary,
+          letterSpacing: 1.1,
+        ),
+      ),
+    );
   }
 
-  Future<void> _performDelete(bool isRoom, String itemName) async {
-    if (isRoom) {
-      _rooms.remove(itemName);
-      await _prefs.saveRooms(_rooms);
-    } else {
-      _categories.remove(itemName);
-      await _prefs.saveCategories(_categories);
-    }
-    _refreshLists();
+  Widget _buildTile(BuildContext context,
+      {required IconData icon, required Color color, required String title, required String subtitle, required VoidCallback onTap}) {
+    return ListTile(
+      leading: CircleAvatar(
+        backgroundColor: color.withOpacity(0.1),
+        child: Icon(icon, color: color),
+      ),
+      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w500)),
+      subtitle: Text(subtitle, style: const TextStyle(fontSize: 12)),
+      trailing: const Icon(Icons.chevron_right, size: 20),
+      onTap: onTap,
+    );
   }
 
-  // --- UI COMPONENTS ---
+  Future<void> _handleImport(BuildContext context) async {
+    FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
+    if (result == null) return;
 
-  void _showDeleteWarning(String name, int count, bool isRoom) {
-    final colorScheme = Theme.of(context).colorScheme;
+    final provider = Provider.of<InventoryProvider>(context, listen: false);
 
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Row(
-          children: [
-            Icon(Icons.warning_amber_rounded, color: colorScheme.error),
-            const SizedBox(width: 10),
-            const Text('Items in Use'),
-          ],
-        ),
-        content: Text(
-            'There are $count items currently assigned to the ${isRoom ? 'Room' : 'Category'} "$name".\n\n'
-                'If you delete this, those items will keep the label "$name", but it will no longer appear in your selection lists. Proceed?'
-        ),
+        title: const Text('Restore Data?'),
+        content: const Text('This will overwrite your current inventory. Continue?'),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('CANCEL'),
-          ),
-          TextButton(
-            onPressed: () {
-              _performDelete(isRoom, name);
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('CANCEL')),
+          ElevatedButton(
+            onPressed: () async {
               Navigator.pop(ctx);
+              bool success = await ZipService.importBackup(File(result.files.single.path!));
+              if (success) {
+                await provider.refreshAfterImport();
+              }
             },
-            child: Text('DELETE ANYWAY', style: TextStyle(color: colorScheme.error)),
+            child: const Text('RESTORE'),
           ),
         ],
       ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return DefaultTabController(
-      length: 2,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('Manage Lists'),
-          bottom: const TabBar(
-            tabs: [
-              Tab(icon: Icon(Icons.meeting_room), text: 'Rooms'),
-              Tab(icon: Icon(Icons.style), text: 'Categories'),
-            ],
-          ),
-        ),
-        body: TabBarView(
-          children: [
-            _buildList(true, _rooms),
-            _buildList(false, _categories),
-          ],
-        ),
-        floatingActionButton: Builder(
-          builder: (context) => FloatingActionButton.extended(
-            onPressed: () {
-              final tabIndex = DefaultTabController.of(context).index;
-              _showAddDialog(tabIndex == 0);
-            },
-            label: const Text('Add New'),
-            icon: const Icon(Icons.add),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildList(bool isRoom, List<String> items) {
-    if (items.isEmpty) {
-      return Center(
-        child: Text(
-          'No ${isRoom ? 'rooms' : 'categories'} added yet.',
-          style: const TextStyle(color: Colors.grey),
-        ),
-      );
-    }
-
-    return ListView.separated(
-      padding: const EdgeInsets.all(8),
-      itemCount: items.length,
-      separatorBuilder: (context, index) => const Divider(height: 1),
-      itemBuilder: (ctx, i) {
-        final itemName = items[i];
-        return ListTile(
-          title: Text(itemName),
-          leading: Icon(isRoom ? Icons.door_front_door_outlined : Icons.label_outline),
-          trailing: IconButton(
-            icon: const Icon(Icons.delete_outline),
-            color: Theme.of(context).colorScheme.error,
-            onPressed: () => _handleDelete(isRoom, itemName),
-          ),
-        );
-      },
     );
   }
 }
@@ -1519,166 +1638,216 @@ class BackupService {
 }
 
 ============================================================
-PATH: .\lib\services\pdf_service.dart
+PATH: .\lib\services\export_service.dart
 ============================================================
 
+import 'dart:convert';
 import 'dart:io';
-import 'package:flutter/services.dart';
-import 'package:pdf/pdf.dart';
-import 'package:pdf/widgets.dart' as pw;
-import 'package:printing/printing.dart';
+import 'package:csv/csv.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 import '../models/item.dart';
-import 'package:intl/intl.dart';
 
-class PdfService {
-  static Future<void> generateInventoryReport(List<Item> items) async {
-    final pdf = pw.Document();
-    final currencyFormat = NumberFormat.simpleCurrency();
-    final dateFormat = DateFormat.yMMMd();
-
-    pdf.addPage(
-      pw.MultiPage(
-        pageFormat: PdfPageFormat.a4,
-        margin: const pw.EdgeInsets.all(32),
-        build: (context) => [
-          _buildHeader(items.length, items.fold(0.0, (sum, item) => sum + item.value)),
-          pw.SizedBox(height: 20),
-
-          // Generate a row for every item
-          ...items.map((item) => _buildItemRow(item, currencyFormat, dateFormat)).toList(),
-        ],
-      ),
-    );
-
-    await Printing.sharePdf(bytes: await pdf.save(), filename: 'inventory_report.pdf');
+class ExportService {
+  static Future<void> shareAsJson(List<Item> items) async {
+    final jsonData = items.map((i) => i.toMap()).toList();
+    final directory = await getTemporaryDirectory();
+    final file = File('${directory.path}/inventory_export.json');
+    await file.writeAsString(jsonEncode(jsonData));
+    await Share.shareXFiles([XFile(file.path)], text: 'Inventory JSON Backup');
   }
 
-  static pw.Widget _buildHeader(int count, double total) {
-    return pw.Column(
-      crossAxisAlignment: pw.CrossAxisAlignment.start,
-      children: [
-        pw.Text("Home Inventory Report", style: pw.TextStyle(fontSize: 24, fontWeight: pw.FontWeight.bold)),
-        pw.Text("Generated on: ${DateFormat.yMMMd().format(DateTime.now())}"),
-        pw.Divider(),
-        pw.Row(
-          mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-          children: [
-            pw.Text("Total Items: $count"),
-            pw.Text("Total Value: ${NumberFormat.simpleCurrency().format(total)}",
-                style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-          ],
-        ),
-      ],
-    );
-  }
+  static Future<void> shareAsCsv(List<Item> items) async {
+    List<List<dynamic>> rows = [
+      ["Name", "Value", "Room", "Category", "Purchase Date", "Brand", "Model", "Serial", "Notes"]
+    ];
 
-  static pw.Widget _buildItemRow(Item item, NumberFormat currency, DateFormat date) {
-    // Point 8 & 11: Defensive Image Loading
-    pw.MemoryImage? imageProvider;
-
-    if (item.imagePaths.isNotEmpty) {
-      try {
-        final file = File(item.imagePaths[0]);
-        // Point 8: Verify existence so readAsBytesSync doesn't throw a FileSystemException
-        if (file.existsSync()) {
-          // Point 11: In a production app, we would ideally use a resized
-          // thumbnail here to save RAM, but checking existence is the first priority.
-          imageProvider = pw.MemoryImage(file.readAsBytesSync());
-        }
-      } catch (e) {
-        // If something goes wrong with a specific image, we log it and
-        // let the PDF continue generating without that image.
-        print("Error loading image for PDF: $e");
-      }
+    for (var i in items) {
+      rows.add([
+        i.name,
+        i.value,
+        i.room ?? "",
+        i.category ?? "",
+        i.purchaseDate.toIso8601String(),
+        i.brand ?? "",
+        i.model ?? "",
+        i.serialNumber ?? "",
+        i.notes ?? ""
+      ]);
     }
 
-    return pw.Container(
-      margin: const pw.EdgeInsets.only(bottom: 10),
-      padding: const pw.EdgeInsets.all(8),
-      decoration: pw.BoxDecoration(
-        border: pw.Border.all(color: PdfColors.grey300),
-        borderRadius: pw.BorderRadius.circular(4),
-      ),
-      child: pw.Row(
-        crossAxisAlignment: pw.CrossAxisAlignment.start,
-        children: [
-          // Image Thumbnail with fixed sizing to prevent layout shifts
-          pw.Container(
-            width: 80,
-            height: 80,
-            color: PdfColors.grey100, // Light background for missing images
-            child: imageProvider != null
-                ? pw.Image(imageProvider, fit: pw.BoxFit.cover)
-                : pw.Center(
-              child: pw.Text(
-                item.imagePaths.isEmpty ? "No Photo" : "Photo Error",
-                style: const pw.TextStyle(fontSize: 7),
-                textAlign: pw.TextAlign.center,
-              ),
-            ),
-          ),
-          pw.SizedBox(width: 15),
-          // Details
-          pw.Expanded(
-            child: pw.Column(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: [
-                pw.Text(item.name, style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 13)),
-                pw.SizedBox(height: 2),
-                pw.Text("Room: ${item.room ?? 'N/A'} | Category: ${item.category ?? 'N/A'}", style: const pw.TextStyle(fontSize: 9)),
-                if (item.serialNumber != null && item.serialNumber!.isNotEmpty)
-                  pw.Text("Serial: ${item.serialNumber}", style: const pw.TextStyle(fontSize: 9)),
-                pw.Text("Purchased: ${date.format(item.purchaseDate)}", style: const pw.TextStyle(fontSize: 9)),
-                if (item.notes != null && item.notes!.isNotEmpty)
-                  pw.Padding(
-                    padding: const pw.EdgeInsets.only(top: 4),
-                    child: pw.Text("Notes: ${item.notes}", style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700)),
-                  ),
-              ],
-            ),
-          ),
-          pw.Text(currency.format(item.value), style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-        ],
-      ),
-    );
+    final csvData = const ListToCsvConverter().convert(rows);
+    final directory = await getTemporaryDirectory();
+    final file = File('${directory.path}/inventory_export.csv');
+    await file.writeAsString(csvData);
+    await Share.shareXFiles([XFile(file.path)], text: 'Inventory CSV Export');
   }
 }
 
 ============================================================
-PATH: .\lib\services\preferences_service.dart
+PATH: .\lib\services\pdf_service.dart
 ============================================================
 
-import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:io';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
+import 'package:intl/intl.dart';
+import '../models/item.dart';
 
-class PreferencesService {
-  // We'll keep your existing keys so user data isn't lost
-  static const _keyRooms = 'custom_rooms';
-  static const _keyCategories = 'custom_categories';
+class PdfService {
+  static Future<void> generateInventoryReport(List<Item> items) async {
+    final pdf = pw.Document();
+    final totalValue = items.fold<double>(0, (sum, item) => sum + item.value);
+    final currencyFormat = NumberFormat.simpleCurrency();
 
-  static const List<String> _defaultRooms = ['Living Room', 'Kitchen', 'Bedroom', 'Garage', 'Office'];
-  static const List<String> _defaultCategories = ['Electronics', 'Furniture', 'Jewelry', 'Tools', 'Appliances'];
+    // --- Page 1: Summary / Cover Page ---
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        build: (context) => [
+          pw.Header(
+            level: 0,
+            child: pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+              children: [
+                pw.Text("Home Inventory Report", style: pw.TextStyle(fontSize: 24, fontWeight: pw.FontWeight.bold)),
+                pw.Text(DateFormat.yMMMd().format(DateTime.now())),
+              ],
+            ),
+          ),
+          pw.SizedBox(height: 20),
+          pw.Container(
+            padding: const pw.EdgeInsets.all(10),
+            decoration: pw.BoxDecoration(color: PdfColors.grey100),
+            child: pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceAround,
+              children: [
+                _buildSummaryStat("Total Items", items.length.toString()),
+                _buildSummaryStat("Total Value", currencyFormat.format(totalValue)),
+              ],
+            ),
+          ),
+          pw.SizedBox(height: 20),
+          pw.TableHelper.fromTextArray(
+            headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+            context: context,
+            data: <List<String>>[
+              <String>['Name', 'Room', 'Category', 'Value'],
+              ...items.map((i) => [i.name, i.room ?? 'N/A', i.category ?? 'N/A', currencyFormat.format(i.value)]),
+            ],
+          ),
+        ],
+      ),
+    );
 
-  // --- GETTERS ---
-  Future<List<String>> getRooms() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getStringList(_keyRooms) ?? List.from(_defaultRooms);
+    // --- Detail Pages: Items & Images ---
+    for (var item in items) {
+      final List<pw.Widget> imageWidgets = [];
+
+      // Convert file paths to PDF Images
+      for (int i = 0; i < item.imagePaths.length; i++) {
+        final file = File(item.imagePaths[i]);
+        if (await file.exists()) {
+          final image = pw.MemoryImage(file.readAsBytesSync());
+          final isReceipt = item.receiptIndices.contains(i);
+
+          imageWidgets.add(
+            pw.Container(
+              margin: const pw.EdgeInsets.all(5),
+              decoration: pw.BoxDecoration(
+                border: pw.Border.all(color: isReceipt ? PdfColors.green : PdfColors.grey300, width: 2),
+              ),
+              child: pw.Stack(
+                alignment: pw.Alignment.bottomCenter,
+                children: [
+                  pw.Image(image, width: 150, height: 150, fit: pw.BoxFit.cover),
+                  if (isReceipt)
+                    pw.Container(
+                      width: 150,
+                      color: PdfColors.green,
+                      padding: const pw.EdgeInsets.symmetric(vertical: 2),
+                      child: pw.Text("RECEIPT",
+                          textAlign: pw.TextAlign.center,
+                          style: pw.TextStyle(color: PdfColors.white, fontSize: 8, fontWeight: pw.FontWeight.bold)),
+                    ),
+                ],
+              ),
+            ),
+          );
+        }
+      }
+
+      pdf.addPage(
+        pw.Page(
+          pageFormat: PdfPageFormat.a4,
+          build: (context) => pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              pw.Header(level: 1, text: item.name),
+              pw.Row(
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                children: [
+                  pw.Expanded(
+                    child: pw.Column(
+                      crossAxisAlignment: pw.CrossAxisAlignment.start,
+                      children: [
+                        _buildDetailText("Value:", currencyFormat.format(item.value)),
+                        _buildDetailText("Room:", item.room ?? "N/A"),
+                        _buildDetailText("Category:", item.category ?? "N/A"),
+                        _buildDetailText("Purchase Date:", DateFormat.yMMMd().format(item.purchaseDate)),
+                        if (item.brand != null) _buildDetailText("Brand:", item.brand!),
+                        if (item.model != null) _buildDetailText("Model:", item.model!),
+                        if (item.serialNumber != null) _buildDetailText("Serial:", item.serialNumber!),
+                      ],
+                    ),
+                  ),
+                  pw.Expanded(
+                    child: pw.Column(
+                      crossAxisAlignment: pw.CrossAxisAlignment.start,
+                      children: [
+                        pw.Text("Notes:", style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+                        pw.Text(item.notes ?? "No notes provided."),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              pw.SizedBox(height: 20),
+              pw.Text("Photos & Proof of Purchase:", style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold)),
+              pw.Divider(),
+              pw.Wrap(children: imageWidgets),
+            ],
+          ),
+        ),
+      );
+    }
+
+    // Output the PDF to the native Print/Share dialog
+    await Printing.layoutPdf(onLayout: (PdfPageFormat format) async => pdf.save());
   }
 
-  Future<List<String>> getCategories() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getStringList(_keyCategories) ?? List.from(_defaultCategories);
+  static pw.Widget _buildSummaryStat(String label, String value) {
+    return pw.Column(
+      children: [
+        pw.Text(label, style: const pw.TextStyle(fontSize: 12, color: PdfColors.grey700)),
+        pw.Text(value, style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold)),
+      ],
+    );
   }
 
-  // --- SETTERS (The "save" methods the UI expects) ---
-
-  Future<void> saveRooms(List<String> rooms) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList(_keyRooms, rooms);
-  }
-
-  Future<void> saveCategories(List<String> categories) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList(_keyCategories, categories);
+  static pw.Widget _buildDetailText(String label, String value) {
+    return pw.Padding(
+      padding: const pw.EdgeInsets.symmetric(vertical: 2),
+      child: pw.RichText(
+        text: pw.TextSpan(
+          children: [
+            pw.TextSpan(text: "$label ", style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+            pw.TextSpan(text: value),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -1741,6 +1910,44 @@ class ZipService {
       return null;
     }
   }
+
+  static Future<bool> importBackup(File zipFile) async {
+    try {
+      final bytes = await zipFile.readAsBytes();
+      final archive = ZipDecoder().decodeBytes(bytes);
+      final appDir = await getApplicationDocumentsDirectory();
+      final dbPath = await _getDatabasePath();
+
+      for (final file in archive) {
+        final filename = file.name;
+        if (file.isFile) {
+          final data = file.content as List<int>;
+
+          if (filename == 'inventory.db') {
+            // 1. Handle Database Restore
+            // We write to a temp file first to ensure integrity
+            final tempDb = File('$dbPath.tmp');
+            await tempDb.writeAsBytes(data);
+
+            // Close existing connection before overwriting
+            await databaseFactory.deleteDatabase(dbPath);
+            await tempDb.rename(dbPath);
+          } else {
+            // 2. Handle Images Restore
+            // Reconstruct the image in the app's document folder
+            final outFile = File(p.join(appDir.path, filename));
+            await outFile.create(recursive: true);
+            await outFile.writeAsBytes(data);
+          }
+        }
+      }
+      return true;
+    } catch (e) {
+      dev.log("Import Failure: $e");
+      return false;
+    }
+  }
+
 }
 
 ============================================================

@@ -5,10 +5,10 @@ import 'package:home_inventory/screens/item_detail_screen.dart';
 import 'package:home_inventory/screens/settings_screen.dart';
 import 'package:home_inventory/services/pdf_service.dart';
 import 'package:home_inventory/services/zip_service.dart';
+import 'package:home_inventory/services/export_service.dart'; // We'll create this next
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 import '../providers/inventory_provider.dart';
-
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -32,29 +32,71 @@ class _HomeScreenState extends State<HomeScreen> {
 
     showModalBottomSheet(
       context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
       builder: (ctx) => SafeArea(
-        child: Wrap(
-          children: [
-            ListTile(
-              leading: const Icon(Icons.picture_as_pdf, color: Colors.red),
-              title: const Text('Export PDF Report'),
-              subtitle: const Text('Best for insurance claims'),
-              onTap: () {
-                Navigator.pop(ctx);
-                PdfService.generateInventoryReport(provider.items);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.folder_zip, color: Colors.orange),
-              title: const Text('Export ZIP Backup'),
-              subtitle: const Text('Includes all full-resolution photos'),
-              onTap: () {
-                Navigator.pop(ctx);
-                final allImages = provider.items.expand((item) => item.imagePaths).toList();
-                ZipService.createFullBackup(allImages);
-              },
-            ),
-          ],
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                "Export Inventory",
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 15),
+              ListTile(
+                leading: const CircleAvatar(
+                  backgroundColor: Colors.redAccent,
+                  child: Icon(Icons.picture_as_pdf, color: Colors.white),
+                ),
+                title: const Text('Professional PDF Report'),
+                subtitle: const Text('Includes photos and receipt tags'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  PdfService.generateInventoryReport(provider.items);
+                },
+              ),
+              ListTile(
+                leading: const CircleAvatar(
+                  backgroundColor: Colors.green,
+                  child: Icon(Icons.table_chart, color: Colors.white),
+                ),
+                title: const Text('CSV Spreadsheet'),
+                subtitle: const Text('Best for Excel or Google Sheets'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  ExportService.shareAsCsv(provider.items);
+                },
+              ),
+              ListTile(
+                leading: const CircleAvatar(
+                  backgroundColor: Colors.blue,
+                  child: Icon(Icons.code, color: Colors.white),
+                ),
+                title: const Text('JSON Data File'),
+                subtitle: const Text('Raw data backup'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  ExportService.shareAsJson(provider.items);
+                },
+              ),
+              ListTile(
+                leading: const CircleAvatar(
+                  backgroundColor: Colors.orange,
+                  child: Icon(Icons.folder_zip, color: Colors.white),
+                ),
+                title: const Text('Full ZIP Backup'),
+                subtitle: const Text('Includes all original photos'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  final allImages = provider.items.expand((item) => item.imagePaths).toList();
+                  ZipService.createFullBackup(allImages);
+                },
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -62,7 +104,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // listen: false here because we use Consumer for the parts that need to rebuild
     final inventoryProvider = Provider.of<InventoryProvider>(context, listen: false);
 
     return Scaffold(
@@ -74,14 +115,11 @@ class _HomeScreenState extends State<HomeScreen> {
           decoration: const InputDecoration(
             hintText: 'Search items, rooms...',
             border: InputBorder.none,
-            hintStyle: TextStyle(color: Colors.blueGrey),
           ),
-          style: const TextStyle(fontSize: 18),
           onChanged: (val) => inventoryProvider.setSearchQuery(val),
         )
             : const Text('My Inventory'),
         actions: [
-          // 1. Search Toggle Button
           IconButton(
             icon: Icon(_isSearching ? Icons.close : Icons.search),
             onPressed: () {
@@ -94,42 +132,36 @@ class _HomeScreenState extends State<HomeScreen> {
               });
             },
           ),
-          // 2. Export/Backup Button (Hidden during search for space)
           if (!_isSearching)
             IconButton(
-              icon: const Icon(Icons.share),
-              tooltip: 'Export Backup',
+              icon: const Icon(Icons.ios_share), // Using a standard share icon
+              tooltip: 'Export',
               onPressed: () => _showExportMenu(context),
             ),
-          // 3. Settings Button
           if (!_isSearching)
             IconButton(
               icon: const Icon(Icons.settings),
-              onPressed: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute(builder: (context) => const SettingsScreen()),
-                );
-              },
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (context) => const SettingsScreen()),
+              ),
             ),
-          // 4. Total Value Pill
+          // Total Value Pill
           Padding(
-            padding: const EdgeInsets.only(right: 16.0, left: 8.0),
+            padding: const EdgeInsets.only(right: 8.0),
             child: Center(
               child: Consumer<InventoryProvider>(
                 builder: (context, provider, child) {
-                  final format = NumberFormat.simpleCurrency();
                   return Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                     decoration: BoxDecoration(
-                      color: Colors.green[100],
-                      borderRadius: BorderRadius.circular(20),
+                      color: Colors.green.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(12),
                     ),
                     child: Text(
-                      format.format(provider.totalValue),
-                      style: TextStyle(
+                      NumberFormat.simpleCurrency().format(provider.totalValue),
+                      style: const TextStyle(
                         fontWeight: FontWeight.bold,
-                        fontSize: 14,
-                        color: Colors.green[800],
+                        color: Colors.green,
                       ),
                     ),
                   );
@@ -159,10 +191,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(height: 16),
                   Text(
-                    _isSearching
-                        ? 'No items match your search.'
-                        : 'Your inventory is empty.\nTap the button below to add an item.',
-                    textAlign: TextAlign.center,
+                    _isSearching ? 'No results found.' : 'Inventory is empty.',
                     style: const TextStyle(color: Colors.grey),
                   ),
                 ],
@@ -172,63 +201,36 @@ class _HomeScreenState extends State<HomeScreen> {
 
           return ListView.builder(
             itemCount: displayItems.length,
-            padding: const EdgeInsets.all(8),
+            padding: const EdgeInsets.symmetric(vertical: 8),
             itemBuilder: (context, index) {
               final item = displayItems[index];
-              return Card(
-                elevation: 2,
-                margin: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
-                child: ListTile(
-                  contentPadding: const EdgeInsets.all(10),
-                  leading: ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: SizedBox(
-                      width: 60,
-                      height: 60,
-                      child: item.imagePaths.isNotEmpty
-                          ? Image.file(
-                        File(item.imagePaths[0]),
-                        fit: BoxFit.cover,
-                        cacheWidth: 150,
-                        // FIXED: Changed 'cite' back to 'ctx'
-                        errorBuilder: (ctx, err, stack) =>
-                        const Icon(Icons.broken_image, color: Colors.grey),
-                      )
-                          : Container(
-                        color: Colors.grey[200],
-                        child: const Icon(Icons.image_not_supported, color: Colors.grey),
-                      ),
-                    ),
+              return ListTile(
+                leading: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: SizedBox(
+                    width: 50,
+                    height: 50,
+                    child: item.imagePaths.isNotEmpty
+                        ? Image.file(
+                      File(item.imagePaths[0]),
+                      fit: BoxFit.cover,
+                      cacheWidth: 100,
+                      errorBuilder: (ctx, err, stack) =>
+                      const Icon(Icons.broken_image),
+                    )
+                        : Container(color: Colors.grey[200]),
                   ),
-                  title: Text(
-                    item.name,
-                    style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                title: Text(item.name, style: const TextStyle(fontWeight: FontWeight.w600)),
+                subtitle: Text("${item.room ?? 'Unassigned'} • ${item.category ?? 'General'}"),
+                trailing: Text(
+                  NumberFormat.simpleCurrency().format(item.value),
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (context) => ItemDetailScreen(itemId: item.id!),
                   ),
-                  subtitle: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(item.room ?? 'Unassigned Room'),
-                      Text(
-                        DateFormat.yMMMd().format(item.purchaseDate),
-                        style: const TextStyle(fontSize: 12),
-                      ),
-                    ],
-                  ),
-                  trailing: Text(
-                    NumberFormat.simpleCurrency().format(item.value),
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 15,
-                      color: Colors.blueGrey,
-                    ),
-                  ),
-                  onTap: () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (context) => ItemDetailScreen(itemId: item.id!,),
-                      ),
-                    );
-                  },
                 ),
               );
             },
@@ -236,12 +238,10 @@ class _HomeScreenState extends State<HomeScreen> {
         },
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () {
-          Navigator.of(context).push(
-            MaterialPageRoute(builder: (context) => const AddItemScreen()),
-          );
-        },
-        icon: const Icon(Icons.add_a_photo),
+        onPressed: () => Navigator.of(context).push(
+          MaterialPageRoute(builder: (context) => const AddItemScreen()),
+        ),
+        icon: const Icon(Icons.add),
         label: const Text("Add Item"),
       ),
     );
