@@ -3,9 +3,10 @@ import 'package:flutter/material.dart';
 import 'package:home_inventory/screens/add_item_screen.dart';
 import 'package:home_inventory/screens/item_detail_screen.dart';
 import 'package:home_inventory/screens/settings_screen.dart';
+import 'package:home_inventory/screens/fast_add_screen.dart';
 import 'package:home_inventory/services/pdf_service.dart';
 import 'package:home_inventory/services/zip_service.dart';
-import 'package:home_inventory/services/export_service.dart'; // We'll create this next
+import 'package:home_inventory/services/export_service.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 import '../providers/inventory_provider.dart';
@@ -27,6 +28,7 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
+  // --- EXPORT MENU ---
   void _showExportMenu(BuildContext context) {
     final provider = Provider.of<InventoryProvider>(context, listen: false);
 
@@ -41,64 +43,35 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text(
-                "Export Inventory",
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-              ),
+              const Text("Export Inventory",
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
               const SizedBox(height: 15),
-              ListTile(
-                leading: const CircleAvatar(
-                  backgroundColor: Colors.redAccent,
-                  child: Icon(Icons.picture_as_pdf, color: Colors.white),
-                ),
-                title: const Text('Professional PDF Report'),
-                subtitle: const Text('Includes photos and receipt tags'),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  PdfService.generateInventoryReport(provider.items);
-                },
-              ),
-              ListTile(
-                leading: const CircleAvatar(
-                  backgroundColor: Colors.green,
-                  child: Icon(Icons.table_chart, color: Colors.white),
-                ),
-                title: const Text('CSV Spreadsheet'),
-                subtitle: const Text('Best for Excel or Google Sheets'),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  ExportService.shareAsCsv(provider.items);
-                },
-              ),
-              ListTile(
-                leading: const CircleAvatar(
-                  backgroundColor: Colors.blue,
-                  child: Icon(Icons.code, color: Colors.white),
-                ),
-                title: const Text('JSON Data File'),
-                subtitle: const Text('Raw data backup'),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  ExportService.shareAsJson(provider.items);
-                },
-              ),
-              ListTile(
-                leading: const CircleAvatar(
-                  backgroundColor: Colors.orange,
-                  child: Icon(Icons.folder_zip, color: Colors.white),
-                ),
-                title: const Text('Full ZIP Backup'),
-                subtitle: const Text('Includes all original photos'),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  final allImages = provider.items.expand((item) => item.imagePaths).toList();
-                  ZipService.createFullBackup(allImages);
-                },
-              ),
+              _buildExportTile(ctx, "Insurance PDF Report", Icons.picture_as_pdf, Colors.redAccent,
+                      () => PdfService.generateInventoryReport(provider.items)),
+              _buildExportTile(ctx, "CSV Spreadsheet", Icons.table_chart, Colors.green,
+                      () => ExportService.shareAsCsv(provider.items)),
+              _buildExportTile(ctx, "JSON Data File", Icons.code, Colors.blue,
+                      () => ExportService.shareAsJson(provider.items)),
+              _buildExportTile(ctx, "Full ZIP Backup", Icons.folder_zip, Colors.orange,
+                      () {
+                    final allImages = provider.items.expand((item) => item.imagePaths).toList();
+                    ZipService.createFullBackup(allImages);
+                  }),
             ],
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildExportTile(BuildContext context, String title, IconData icon, Color color, VoidCallback onTap) {
+    return ListTile(
+      leading: CircleAvatar(backgroundColor: color, child: Icon(icon, color: Colors.white)),
+      title: Text(title),
+      onTap: () {
+        Navigator.pop(context);
+        onTap();
+      },
     );
   }
 
@@ -134,8 +107,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           if (!_isSearching)
             IconButton(
-              icon: const Icon(Icons.ios_share), // Using a standard share icon
-              tooltip: 'Export',
+              icon: const Icon(Icons.ios_share),
               onPressed: () => _showExportMenu(context),
             ),
           if (!_isSearching)
@@ -145,7 +117,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 MaterialPageRoute(builder: (context) => const SettingsScreen()),
               ),
             ),
-          // Total Value Pill
+          // --- TOTAL VALUE PILL ---
           Padding(
             padding: const EdgeInsets.only(right: 8.0),
             child: Center(
@@ -159,10 +131,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     child: Text(
                       NumberFormat.simpleCurrency().format(provider.totalValue),
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: Colors.green,
-                      ),
+                      style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green),
                     ),
                   );
                 },
@@ -173,10 +142,7 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       body: Consumer<InventoryProvider>(
         builder: (context, provider, child) {
-          if (provider.isLoading) {
-            return const Center(child: CircularProgressIndicator());
-          }
-
+          if (provider.isLoading) return const Center(child: CircularProgressIndicator());
           final displayItems = provider.filteredItems;
 
           if (displayItems.isEmpty) {
@@ -184,16 +150,10 @@ class _HomeScreenState extends State<HomeScreen> {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(
-                    _isSearching ? Icons.search_off : Icons.inventory_2_outlined,
-                    size: 80,
-                    color: Colors.grey[300],
-                  ),
+                  Icon(Icons.inventory_2_outlined, size: 80, color: Colors.grey[300]),
                   const SizedBox(height: 16),
-                  Text(
-                    _isSearching ? 'No results found.' : 'Inventory is empty.',
-                    style: const TextStyle(color: Colors.grey),
-                  ),
+                  Text(_isSearching ? 'No results found.' : 'Inventory is empty.',
+                      style: const TextStyle(color: Colors.grey)),
                 ],
               ),
             );
@@ -204,6 +164,13 @@ class _HomeScreenState extends State<HomeScreen> {
             padding: const EdgeInsets.symmetric(vertical: 8),
             itemBuilder: (context, index) {
               final item = displayItems[index];
+
+              // LOGIC FOR THE "NEEDS INFO" BADGE
+              final bool isIncomplete = item.value == 0 ||
+                  item.category == null ||
+                  item.category!.isEmpty ||
+                  item.room == null;
+
               return ListTile(
                 leading: ClipRRect(
                   borderRadius: BorderRadius.circular(8),
@@ -211,38 +178,71 @@ class _HomeScreenState extends State<HomeScreen> {
                     width: 50,
                     height: 50,
                     child: item.imagePaths.isNotEmpty
-                        ? Image.file(
-                      File(item.imagePaths[0]),
-                      fit: BoxFit.cover,
-                      cacheWidth: 100,
-                      errorBuilder: (ctx, err, stack) =>
-                      const Icon(Icons.broken_image),
-                    )
-                        : Container(color: Colors.grey[200]),
+                        ? Image.file(File(item.imagePaths[0]), fit: BoxFit.cover)
+                        : Container(color: Colors.grey[200], child: const Icon(Icons.image_not_supported)),
                   ),
                 ),
-                title: Text(item.name, style: const TextStyle(fontWeight: FontWeight.w600)),
-                subtitle: Text("${item.room ?? 'Unassigned'} • ${item.category ?? 'General'}"),
+                title: Row(
+                  children: [
+                    Expanded(child: Text(item.name, style: const TextStyle(fontWeight: FontWeight.w600))),
+                    if (isIncomplete) _buildIncompleteBadge(),
+                  ],
+                ),
+                subtitle: Text("${item.room ?? 'No Room'} • ${item.category ?? 'No Category'}"),
                 trailing: Text(
                   NumberFormat.simpleCurrency().format(item.value),
-                  style: const TextStyle(fontWeight: FontWeight.bold),
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: item.value == 0 ? Colors.grey : Colors.black87,
+                  ),
                 ),
                 onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (context) => ItemDetailScreen(itemId: item.id!),
-                  ),
+                  MaterialPageRoute(builder: (context) => ItemDetailScreen(itemId: item.id!)),
                 ),
               );
             },
           );
         },
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => Navigator.of(context).push(
-          MaterialPageRoute(builder: (context) => const AddItemScreen()),
-        ),
-        icon: const Icon(Icons.add),
-        label: const Text("Add Item"),
+      // --- DUAL FLOATING ACTION BUTTONS ---
+      floatingActionButton: Column(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          FloatingActionButton.small(
+            heroTag: "fastBtn",
+            tooltip: "Fast Add (Voice/Keyboard)",
+            backgroundColor: Colors.orangeAccent,
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (context) => const FastAddScreen()),
+            ),
+            child: const Icon(Icons.bolt, color: Colors.white),
+          ),
+          const SizedBox(height: 12),
+          FloatingActionButton.extended(
+            heroTag: "regBtn",
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (context) => const AddItemScreen()),
+            ),
+            icon: const Icon(Icons.add),
+            label: const Text("Full Add"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildIncompleteBadge() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      margin: const EdgeInsets.only(left: 8),
+      decoration: BoxDecoration(
+        color: Colors.orange.shade50,
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: Colors.orange.shade200),
+      ),
+      child: const Text(
+        "NEEDS INFO",
+        style: TextStyle(color: Colors.orange, fontSize: 9, fontWeight: FontWeight.bold),
       ),
     );
   }
