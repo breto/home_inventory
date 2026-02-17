@@ -104,6 +104,13 @@ class InventoryProvider with ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> clearAll() async {
+    _items.clear();
+    // If you are using a database like SQFlite, execute:
+    // await _db.delete('items');
+    notifyListeners();
+  }
+
   // --- HELPER COUNTS ---
 
   int getItemsCountInRoom(String roomName) => _items.where((i) => i.room == roomName).length;

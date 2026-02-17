@@ -5,7 +5,11 @@ import 'package:file_picker/file_picker.dart';
 import '../providers/inventory_provider.dart';
 import '../providers/settings_provider.dart';
 import '../services/zip_service.dart';
+import '../services/demo_service.dart'; // Ensure this service is created
 import 'list_management_screen.dart';
+
+// TOGGLE THIS TO FALSE BEFORE PUBLISHING TO HIDE DEV TOOLS
+const bool _showDebugOptions = true;
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -64,7 +68,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                // NEW: Insurance Company Field
                 TextField(
                   controller: _companyController,
                   decoration: const InputDecoration(
@@ -101,7 +104,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         _nameController.text,
                         _addressController.text,
                         _policyController.text,
-                        _companyController.text, // Passing the new company field
+                        _companyController.text,
                       );
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
@@ -195,6 +198,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
               MaterialPageRoute(builder: (_) => const ListManagementScreen(isRoom: false)),
             ),
           ),
+
+          // --- NEW: DEVELOPER TOOLS SECTION ---
+          if (_showDebugOptions) ...[
+            const Divider(),
+            _buildSectionHeader(context, 'Developer Tools'),
+            _buildTile(
+              context,
+              icon: Icons.auto_fix_high,
+              color: Colors.purple,
+              title: 'Load Demo Data',
+              subtitle: 'Add sample items to test PDF and UI',
+              onTap: () async {
+                final provider = context.read<InventoryProvider>();
+                await DemoService.populateDemoData(provider);
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text("Demo data loaded!")),
+                  );
+                }
+              },
+            ),
+            _buildTile(
+              context,
+              icon: Icons.delete_forever,
+              color: Colors.red,
+              title: 'Clear All Data',
+              subtitle: 'Danger: Wipe entire inventory',
+              onTap: () => _confirmClearAll(context),
+            ),
+          ],
+
           const SizedBox(height: 30),
         ],
       ),
@@ -229,6 +263,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
       subtitle: Text(subtitle, style: const TextStyle(fontSize: 12)),
       trailing: const Icon(Icons.chevron_right, size: 20),
       onTap: onTap,
+    );
+  }
+
+  void _confirmClearAll(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Wipe All Data?'),
+        content: const Text('This will permanently delete your entire inventory. This action cannot be undone.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('CANCEL')),
+          TextButton(
+            onPressed: () {
+              context.read<InventoryProvider>().clearAll();
+              Navigator.pop(ctx);
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text("Inventory cleared.")),
+              );
+            },
+            child: const Text('CLEAR ALL', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
     );
   }
 
