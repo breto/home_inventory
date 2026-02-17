@@ -4,22 +4,16 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import '../models/item.dart';
+import '../providers/settings_provider.dart'; // Import added
 
 class PdfService {
-  static Future<void> generateInventoryReport(List<Item> items) async {
+  // FIX: Added SettingsProvider to the arguments
+  static Future<void> generateInventoryReport(List<Item> items, SettingsProvider settings) async {
     final pdf = pw.Document();
     final NumberFormat currencyFormat = NumberFormat.simpleCurrency();
     final DateTime now = DateTime.now();
 
-    // 1. Calculate Summary Data
     double totalValue = items.fold(0, (sum, item) => sum + item.value);
-
-    // Group items by Room for the summary table
-    Map<String, List<Item>> itemsByRoom = {};
-    for (var item in items) {
-      final room = item.room ?? "Unassigned";
-      itemsByRoom.putIfAbsent(room, () => []).add(item);
-    }
 
     // --- PAGE 1: PROFESSIONAL COVER & SUMMARY TABLE ---
     pdf.addPage(
@@ -27,21 +21,27 @@ class PdfService {
         pageFormat: PdfPageFormat.a4,
         margin: const pw.EdgeInsets.all(32),
         build: (context) => [
-          // Header Section
+          // Header Section Updated with Settings Data
           pw.Row(
             mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
             children: [
               pw.Column(
                 crossAxisAlignment: pw.CrossAxisAlignment.start,
                 children: [
-                  pw.Text("HOME INVENTORY REPORT",
-                      style: pw.TextStyle(fontSize: 24, fontWeight: pw.FontWeight.bold)),
-                  pw.Text("Generated on: ${DateFormat.yMMMMd().format(now)}"),
+                  pw.Text(settings.userName.isEmpty ? "HOME INVENTORY REPORT" : settings.userName.toUpperCase(),
+                      style: pw.TextStyle(fontSize: 20, fontWeight: pw.FontWeight.bold)),
+                  if (settings.address.isNotEmpty)
+                    pw.Text(settings.address, style: const pw.TextStyle(fontSize: 10)),
+                  if (settings.policyNumber.isNotEmpty)
+                    pw.Text("Policy #: ${settings.policyNumber}", style: const pw.TextStyle(fontSize: 10)),
+                  pw.SizedBox(height: 5),
+                  pw.Text("Generated on: ${DateFormat.yMMMMd().format(now)}", style: const pw.TextStyle(fontSize: 8)),
                 ],
               ),
               pw.Container(
                 padding: const pw.EdgeInsets.all(10),
-                decoration: pw.BoxDecoration(color: PdfColors.grey200),
+                decoration: const pw.BoxDecoration(color: PdfColors.grey200),
                 child: pw.Column(
                   children: [
                     pw.Text("TOTAL ESTIMATED VALUE", style: const pw.TextStyle(fontSize: 10)),
@@ -54,7 +54,6 @@ class PdfService {
           ),
           pw.SizedBox(height: 30),
 
-          // Compressed Summary Table
           pw.Text("Inventory Overview", style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold)),
           pw.SizedBox(height: 10),
           pw.Table.fromTextArray(
@@ -80,7 +79,6 @@ class PdfService {
     );
 
     // --- APPENDIX: PHOTO EVIDENCE GRID ---
-    // Insurance prefers photos at the end to keep the data table clean
     pdf.addPage(
       pw.MultiPage(
         pageFormat: PdfPageFormat.a4,
@@ -96,7 +94,6 @@ class PdfService {
                 child: pw.Column(
                   crossAxisAlignment: pw.CrossAxisAlignment.start,
                   children: [
-                    // Main Item Image
                     pw.Expanded(
                       child: item.imagePaths.isNotEmpty
                           ? pw.Image(pw.MemoryImage(File(item.imagePaths[0]).readAsBytesSync()), fit: pw.BoxFit.cover)
@@ -116,8 +113,7 @@ class PdfService {
       ),
     );
 
-    // --- OPTIONAL: HIGH VALUE DETAIL PAGES ---
-    // Create dedicated pages only for items over a certain threshold (e.g., $1000)
+    // --- HIGH VALUE DETAIL PAGES (Threshold: $1000) ---
     final highValueItems = items.where((i) => i.value >= 1000).toList();
     if (highValueItems.isNotEmpty) {
       for (var item in highValueItems) {
@@ -128,7 +124,7 @@ class PdfService {
               children: [
                 pw.Header(level: 0, text: "High Value Asset: ${item.name}"),
                 pw.Row(
-                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                  crossAxisAlignment: pw.CrossAxisAlignment.start, // Fixed from previous CrossAxisAlign
                   children: [
                     pw.Expanded(
                       flex: 1,
@@ -140,6 +136,10 @@ class PdfService {
                           _detailRow("Model", item.model ?? "N/A"),
                           _detailRow("Serial #", item.serialNumber ?? "N/A"),
                           _detailRow("Purchase Date", DateFormat.yMMMMd().format(item.purchaseDate)),
+                          // NEW: Added Warranty Expiry to PDF
+                          _detailRow("Warranty Until", item.warrantyExpiry != null
+                              ? DateFormat.yMMMMd().format(item.warrantyExpiry!)
+                              : "No Date Recorded"),
                         ],
                       ),
                     ),
@@ -152,7 +152,7 @@ class PdfService {
                     ),
                   ],
                 ),
-                if (item.notes != null) ...[
+                if (item.notes != null && item.notes!.isNotEmpty) ...[
                   pw.SizedBox(height: 20),
                   pw.Text("Description/Notes:", style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
                   pw.Text(item.notes!),

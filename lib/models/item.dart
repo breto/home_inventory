@@ -28,7 +28,7 @@ class Item {
     this.notes,
     this.room,
     this.category,
-    this.receiptIndices = const [],
+    this.receiptIndices = const []
   });
 
   Map<String, dynamic> toMap() {

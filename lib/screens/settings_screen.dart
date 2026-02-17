@@ -3,20 +3,128 @@ import 'package:provider/provider.dart';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import '../providers/inventory_provider.dart';
+import '../providers/settings_provider.dart'; // New Provider
 import '../services/zip_service.dart';
-import 'list_management_screen.dart'; // We will create this next
+import 'list_management_screen.dart';
 
-class SettingsScreen extends StatelessWidget {
+class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  // Controllers for the Insurance Profile
+  late TextEditingController _nameController;
+  late TextEditingController _addressController;
+  late TextEditingController _policyController;
+
+  @override
+  void initState() {
+    super.initState();
+    final settings = context.read<SettingsProvider>();
+    _nameController = TextEditingController(text: settings.userName);
+    _addressController = TextEditingController(text: settings.address);
+    _policyController = TextEditingController(text: settings.policyNumber);
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _addressController.dispose();
+    _policyController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final settingsProvider = context.watch<SettingsProvider>();
 
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
       body: ListView(
         children: [
+          // --- NEW SECTION: INSURANCE PROFILE ---
+          _buildSectionHeader(context, 'Insurance Profile'),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+            child: Column(
+              children: [
+                TextField(
+                  controller: _nameController,
+                  decoration: const InputDecoration(
+                    labelText: "Policy Holder Name",
+                    prefixIcon: Icon(Icons.person_outline),
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _addressController,
+                  maxLines: 2,
+                  decoration: const InputDecoration(
+                    labelText: "Property Address",
+                    prefixIcon: Icon(Icons.home_outlined),
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _policyController,
+                  decoration: const InputDecoration(
+                    labelText: "Policy Number",
+                    prefixIcon: Icon(Icons.description_outlined),
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: () {
+                      settingsProvider.updateProfile(
+                        _nameController.text,
+                        _addressController.text,
+                        _policyController.text,
+                      );
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text("Profile Saved")),
+                      );
+                    },
+                    icon: const Icon(Icons.save),
+                    label: const Text("Save Insurance Info"),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          const Divider(),
+
+          // --- NEW SECTION: APPEARANCE ---
+          _buildSectionHeader(context, 'Appearance'),
+          ListTile(
+            leading: const CircleAvatar(child: Icon(Icons.palette_outlined)),
+            title: const Text("Theme Mode"),
+            subtitle: Text("Currently: ${settingsProvider.themeMode.name.toUpperCase()}"),
+            trailing: DropdownButton<ThemeMode>(
+              value: settingsProvider.themeMode,
+              onChanged: (ThemeMode? newMode) {
+                if (newMode != null) settingsProvider.setThemeMode(newMode);
+              },
+              items: const [
+                DropdownMenuItem(value: ThemeMode.system, child: Text("System")),
+                DropdownMenuItem(value: ThemeMode.light, child: Text("Light")),
+                DropdownMenuItem(value: ThemeMode.dark, child: Text("Dark")),
+              ],
+            ),
+          ),
+
+          const Divider(),
+
+          // --- EXISTING SECTION: DATA MANAGEMENT ---
           _buildSectionHeader(context, 'Data Management'),
           _buildTile(
             context,
@@ -43,7 +151,10 @@ class SettingsScreen extends StatelessWidget {
             subtitle: 'Restore inventory from another device',
             onTap: () => _handleImport(context),
           ),
+
           const Divider(),
+
+          // --- EXISTING SECTION: ORGANIZATION ---
           _buildSectionHeader(context, 'Organization'),
           _buildTile(
             context,
@@ -67,10 +178,13 @@ class SettingsScreen extends StatelessWidget {
               MaterialPageRoute(builder: (_) => const ListManagementScreen(isRoom: false)),
             ),
           ),
+          const SizedBox(height: 30),
         ],
       ),
     );
   }
+
+  // --- HELPER METHODS (Preserving your original style) ---
 
   Widget _buildSectionHeader(BuildContext context, String title) {
     return Padding(

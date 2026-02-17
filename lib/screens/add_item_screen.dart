@@ -21,6 +21,7 @@ class AddItemScreen extends StatefulWidget {
 class _AddItemScreenState extends State<AddItemScreen> {
   final _formKey = GlobalKey<FormState>();
 
+  // Controllers
   final _nameController = TextEditingController();
   final _valueController = TextEditingController();
   final _serialController = TextEditingController();
@@ -28,6 +29,7 @@ class _AddItemScreenState extends State<AddItemScreen> {
   final _modelController = TextEditingController();
   final _notesController = TextEditingController();
 
+  // State Variables
   List<File> _imageFiles = [];
   List<int> _receiptIndices = [];
   String? _selectedRoom;
@@ -67,6 +69,8 @@ class _AddItemScreenState extends State<AddItemScreen> {
     super.dispose();
   }
 
+  // --- LOGIC ---
+
   Future<void> _pickImage(ImageSource source) async {
     final picker = ImagePicker();
     final pickedFile = await picker.pickImage(source: source, imageQuality: 75);
@@ -78,7 +82,7 @@ class _AddItemScreenState extends State<AddItemScreen> {
   Future<void> _selectDate(BuildContext context, bool isPurchaseDate) async {
     final DateTime? picked = await showDatePicker(
       context: context,
-      initialDate: isPurchaseDate ? _purchaseDate : (_warrantyExpiry ?? DateTime.now()),
+      initialDate: isPurchaseDate ? _purchaseDate : (_warrantyExpiry ?? DateTime.now().add(const Duration(days: 365))),
       firstDate: DateTime(2000),
       lastDate: DateTime(2101),
     );
@@ -103,13 +107,19 @@ class _AddItemScreenState extends State<AddItemScreen> {
       List<String> savedPaths = [];
 
       for (var file in _imageFiles) {
+        // If image is already in app dir (editing existing), keep it
         if (file.path.contains(appDir.path)) {
           savedPaths.add(file.path);
         } else {
+          // Compress and save new images
           final fileName = 'img_${DateTime.now().millisecondsSinceEpoch}_${path.basename(file.path)}';
           final targetPath = '${appDir.path}/$fileName';
           var result = await FlutterImageCompress.compressAndGetFile(
-            file.absolute.path, targetPath, quality: 70, minWidth: 1024, minHeight: 1024,
+            file.absolute.path,
+            targetPath,
+            quality: 70,
+            minWidth: 1024,
+            minHeight: 1024,
           );
           savedPaths.add(result?.path ?? (await file.copy(targetPath)).path);
         }
@@ -132,7 +142,12 @@ class _AddItemScreenState extends State<AddItemScreen> {
       );
 
       final provider = Provider.of<InventoryProvider>(context, listen: false);
-      widget.itemToEdit == null ? await provider.addItem(newItem) : await provider.updateItem(newItem);
+      if (widget.itemToEdit == null) {
+        await provider.addItem(newItem);
+      } else {
+        await provider.updateItem(newItem);
+      }
+
       if (mounted) Navigator.pop(context);
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
@@ -140,6 +155,8 @@ class _AddItemScreenState extends State<AddItemScreen> {
       if (mounted) setState(() => _isSaving = false);
     }
   }
+
+  // --- UI ---
 
   @override
   Widget build(BuildContext context) {
@@ -149,8 +166,10 @@ class _AddItemScreenState extends State<AddItemScreen> {
     final categoryOptions = ["None", ...provider.categories];
 
     return Scaffold(
-      appBar: AppBar(title: Text(widget.itemToEdit == null ? 'Add Item' : 'Edit Item')),
-      body: _isSaving ? const Center(child: CircularProgressIndicator()) : SingleChildScrollView(
+      appBar: AppBar(title: Text(widget.itemToEdit == null ? 'Add Full Item' : 'Edit Item')),
+      body: _isSaving
+          ? const Center(child: CircularProgressIndicator())
+          : SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Form(
           key: _formKey,
@@ -160,6 +179,7 @@ class _AddItemScreenState extends State<AddItemScreen> {
               _buildPhotoHeader(),
               _buildPhotoGallery(theme),
               const SizedBox(height: 24),
+
               _buildTextField(_nameController, 'Item Name', Icons.inventory_2, isRequired: true),
               _buildTextField(_valueController, 'Estimated Value (\$)', Icons.monetization_on, isNumber: true),
 
@@ -186,10 +206,13 @@ class _AddItemScreenState extends State<AddItemScreen> {
                   Expanded(child: _buildTextField(_modelController, 'Model #', Icons.label_important)),
                 ],
               ),
+
               _buildScanTextField(_serialController, 'Serial Number / UPC', Icons.qr_code_scanner),
               _buildTextField(_notesController, 'Notes / Description', Icons.description, maxLines: 3),
+
               const SizedBox(height: 32),
               _buildSaveButton(theme),
+              const SizedBox(height: 50),
             ],
           ),
         ),
@@ -197,7 +220,7 @@ class _AddItemScreenState extends State<AddItemScreen> {
     );
   }
 
-  // --- UI COMPONENTS ---
+  // --- COMPONENTS ---
 
   Widget _buildPhotoHeader() {
     return const Padding(
@@ -230,62 +253,36 @@ class _AddItemScreenState extends State<AddItemScreen> {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(12),
             image: DecorationImage(image: FileImage(_imageFiles[index]), fit: BoxFit.cover),
-            border: Border.all(color: isReceipt ? Colors.green : Colors.grey.shade300, width: 2),
+            border: Border.all(color: isReceipt ? Colors.green : Colors.transparent, width: 3),
           ),
         ),
-        // Delete Button
-        Positioned(right: 0, top: 0, child: GestureDetector(
-          onTap: () => setState(() {
-            _imageFiles.removeAt(index);
-            _receiptIndices.remove(index);
-            _receiptIndices = _receiptIndices.map((e) => e > index ? e - 1 : e).toList();
-          }),
-          child: const CircleAvatar(radius: 12, backgroundColor: Colors.red, child: Icon(Icons.close, size: 16, color: Colors.white)),
-        )),
-        // Receipt Toggle
-        Positioned(left: 5, bottom: 5, child: GestureDetector(
-          onTap: () => setState(() => _receiptIndices.contains(index) ? _receiptIndices.remove(index) : _receiptIndices.add(index)),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-            decoration: BoxDecoration(color: isReceipt ? Colors.green : Colors.black54, borderRadius: BorderRadius.circular(8)),
-            child: Row(children: [
-              Icon(Icons.receipt_long, size: 12, color: Colors.white),
-              const SizedBox(width: 4),
-              Text(isReceipt ? "Receipt" : "Tag Receipt", style: const TextStyle(color: Colors.white, fontSize: 10)),
-            ]),
+        Positioned(
+          right: 0, top: 0,
+          child: GestureDetector(
+            onTap: () => setState(() {
+              _imageFiles.removeAt(index);
+              _receiptIndices.remove(index);
+              _receiptIndices = _receiptIndices.map((e) => e > index ? e - 1 : e).toList();
+            }),
+            child: const CircleAvatar(radius: 12, backgroundColor: Colors.red, child: Icon(Icons.close, size: 16, color: Colors.white)),
           ),
-        )),
+        ),
+        Positioned(
+          left: 5, bottom: 5,
+          child: GestureDetector(
+            onTap: () => setState(() => _receiptIndices.contains(index) ? _receiptIndices.remove(index) : _receiptIndices.add(index)),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(color: isReceipt ? Colors.green : Colors.black54, borderRadius: BorderRadius.circular(8)),
+              child: Row(children: [
+                const Icon(Icons.receipt_long, size: 12, color: Colors.white),
+                const SizedBox(width: 4),
+                Text(isReceipt ? "Receipt" : "Tag Receipt", style: const TextStyle(color: Colors.white, fontSize: 10)),
+              ]),
+            ),
+          ),
+        ),
       ],
-    );
-  }
-
-  Widget _buildDatePicker(String label, DateTime? date, VoidCallback onTap, {bool isOptional = false}) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16),
-      child: InkWell(
-        onTap: onTap,
-        child: InputDecorator(
-          decoration: InputDecoration(labelText: isOptional ? '$label (Optional)' : label, border: const OutlineInputBorder()),
-          child: Text(date == null ? 'Select Date' : DateFormat('MMM d, yyyy').format(date)),
-        ),
-      ),
-    );
-  }
-
-  // (Remaining helpers: _buildTextField, _buildDropdown, _buildScanTextField, _buildAddPhotoButton, _showPickerOptions are kept from previous versions)
-  // [Truncated for brevity, but include identical logic to the previous full file gen]
-
-  Widget _buildSaveButton(ThemeData theme) {
-    return ElevatedButton.icon(
-      onPressed: _saveItem,
-      icon: const Icon(Icons.check_circle),
-      label: const Text('SAVE TO INVENTORY', style: TextStyle(fontWeight: FontWeight.bold)),
-      style: ElevatedButton.styleFrom(
-        minimumSize: const Size(double.infinity, 60),
-        backgroundColor: theme.colorScheme.primary,
-        foregroundColor: theme.colorScheme.onPrimary,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      ),
     );
   }
 
@@ -306,6 +303,46 @@ class _AddItemScreenState extends State<AddItemScreen> {
     );
   }
 
+  Widget _buildScanTextField(TextEditingController controller, String label, IconData icon) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: TextFormField(
+        controller: controller,
+        decoration: InputDecoration(
+          labelText: '$label (Optional)',
+          prefixIcon: Icon(icon),
+          suffixIcon: IconButton(
+            icon: Icon(Icons.camera_alt, color: Theme.of(context).colorScheme.primary),
+            onPressed: () async {
+              final String? scannedCode = await Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const BarcodeScannerWidget())
+              );
+              if (scannedCode != null && mounted) setState(() => controller.text = scannedCode);
+            },
+          ),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDatePicker(String label, DateTime? date, VoidCallback onTap, {bool isOptional = false}) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: InkWell(
+        onTap: onTap,
+        child: InputDecorator(
+          decoration: InputDecoration(
+            labelText: isOptional ? '$label (Optional)' : label,
+            border: const OutlineInputBorder(),
+          ),
+          child: Text(date == null ? 'Select Date' : DateFormat('MMM d, yyyy').format(date)),
+        ),
+      ),
+    );
+  }
+
   Widget _buildDropdown(String label, String? value, List<String> items, Function(String?) onChanged) {
     final effectiveValue = items.contains(value) ? value : "None";
     return Padding(
@@ -319,34 +356,17 @@ class _AddItemScreenState extends State<AddItemScreen> {
     );
   }
 
-  Widget _buildScanTextField(TextEditingController controller, String label, IconData icon) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16),
-      child: TextFormField(
-        controller: controller,
-        decoration: InputDecoration(
-          labelText: '$label (Optional)',
-          prefixIcon: Icon(icon),
-          suffixIcon: IconButton(
-            icon: Icon(Icons.camera_alt, color: Theme.of(context).colorScheme.primary),
-            onPressed: () async {
-              final String? scannedCode = await Navigator.push(context, MaterialPageRoute(builder: (context) => const BarcodeScannerWidget()));
-              if (scannedCode != null && mounted) setState(() => controller.text = scannedCode);
-            },
-          ),
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-        ),
-      ),
-    );
-  }
-
   Widget _buildAddPhotoButton(ThemeData theme) {
     return GestureDetector(
       onTap: () => _showPickerOptions(),
       child: Container(
         margin: const EdgeInsets.only(top: 10),
         width: 100,
-        decoration: BoxDecoration(color: theme.colorScheme.surfaceVariant, borderRadius: BorderRadius.circular(12), border: Border.all(color: theme.colorScheme.outlineVariant)),
+        decoration: BoxDecoration(
+            color: theme.colorScheme.surfaceVariant,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: theme.colorScheme.outlineVariant)
+        ),
         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
           Icon(Icons.add_a_photo, color: theme.colorScheme.primary),
           const SizedBox(height: 4),
@@ -366,6 +386,20 @@ class _AddItemScreenState extends State<AddItemScreen> {
           ListTile(leading: const Icon(Icons.camera_alt), title: const Text('Take Photo'), onTap: () { Navigator.pop(ctx); _pickImage(ImageSource.camera); }),
           ListTile(leading: const Icon(Icons.photo_library), title: const Text('From Gallery'), onTap: () { Navigator.pop(ctx); _pickImage(ImageSource.gallery); }),
         ]),
+      ),
+    );
+  }
+
+  Widget _buildSaveButton(ThemeData theme) {
+    return ElevatedButton.icon(
+      onPressed: _saveItem,
+      icon: const Icon(Icons.check_circle),
+      label: const Text('SAVE TO INVENTORY', style: TextStyle(fontWeight: FontWeight.bold)),
+      style: ElevatedButton.styleFrom(
+        minimumSize: const Size(double.infinity, 60),
+        backgroundColor: theme.colorScheme.primary,
+        foregroundColor: theme.colorScheme.onPrimary,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
     );
   }
