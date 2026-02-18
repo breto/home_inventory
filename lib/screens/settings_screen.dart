@@ -5,10 +5,10 @@ import 'package:file_picker/file_picker.dart';
 import '../providers/inventory_provider.dart';
 import '../providers/settings_provider.dart';
 import '../services/zip_service.dart';
-import '../services/demo_service.dart'; // Ensure this service is created
+import '../services/demo_service.dart';
 import 'list_management_screen.dart';
+import 'dev_logs_screen.dart'; // <--- NEW IMPORT
 
-// TOGGLE THIS TO FALSE BEFORE PUBLISHING TO HIDE DEV TOOLS
 const bool _showDebugOptions = true;
 
 class SettingsScreen extends StatefulWidget {
@@ -19,7 +19,6 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  // Controllers for the Insurance Profile
   late TextEditingController _nameController;
   late TextEditingController _companyController;
   late TextEditingController _addressController;
@@ -53,7 +52,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       appBar: AppBar(title: const Text('Settings')),
       body: ListView(
         children: [
-          // --- INSURANCE PROFILE SECTION ---
           _buildSectionHeader(context, 'Insurance Profile'),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
@@ -107,10 +105,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         _companyController.text,
                       );
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text("Profile Saved Successfully"),
-                          behavior: SnackBarBehavior.floating,
-                        ),
+                        const SnackBar(content: Text("Profile Saved Successfully"), behavior: SnackBarBehavior.floating),
                       );
                     },
                     icon: const Icon(Icons.save),
@@ -122,8 +117,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
 
           const Divider(),
-
-          // --- APPEARANCE SECTION ---
           _buildSectionHeader(context, 'Appearance'),
           ListTile(
             leading: const CircleAvatar(child: Icon(Icons.palette_outlined)),
@@ -143,8 +136,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
 
           const Divider(),
-
-          // --- DATA MANAGEMENT SECTION ---
           _buildSectionHeader(context, 'Data Management'),
           _buildTile(
             context,
@@ -157,9 +148,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               final allImages = provider.items.expand((item) => item.imagePaths).toList();
               File? zip = await ZipService.createFullBackup(allImages);
               if (zip != null && context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Backup created at: ${zip.path}')),
-                );
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Backup created at: ${zip.path}')));
               }
             },
           ),
@@ -173,8 +162,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
 
           const Divider(),
-
-          // --- ORGANIZATION SECTION ---
           _buildSectionHeader(context, 'Organization'),
           _buildTile(
             context,
@@ -182,10 +169,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             color: theme.colorScheme.primary,
             title: 'Manage Rooms',
             subtitle: 'Add or remove locations in your home',
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const ListManagementScreen(isRoom: true)),
-            ),
+            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ListManagementScreen(isRoom: true))),
           ),
           _buildTile(
             context,
@@ -193,16 +177,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
             color: theme.colorScheme.primary,
             title: 'Manage Categories',
             subtitle: 'Define item types (Electronics, Tools, etc.)',
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const ListManagementScreen(isRoom: false)),
-            ),
+            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ListManagementScreen(isRoom: false))),
           ),
 
-          // --- NEW: DEVELOPER TOOLS SECTION ---
           if (_showDebugOptions) ...[
             const Divider(),
             _buildSectionHeader(context, 'Developer Tools'),
+            // --- NEW: LOG VIEWER TILE ---
+            _buildTile(
+              context,
+              icon: Icons.bug_report_outlined,
+              color: Colors.teal,
+              title: 'System Logs',
+              subtitle: 'View recent scan events and errors',
+              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DevLogsScreen())),
+            ),
             _buildTile(
               context,
               icon: Icons.auto_fix_high,
@@ -213,9 +202,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 final provider = context.read<InventoryProvider>();
                 await DemoService.populateDemoData(provider);
                 if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text("Demo data loaded!")),
-                  );
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Demo data loaded!")));
                 }
               },
             ),
@@ -228,37 +215,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onTap: () => _confirmClearAll(context),
             ),
           ],
-
           const SizedBox(height: 30),
         ],
       ),
     );
   }
 
-  // --- HELPER METHODS ---
-
+  // --- HELPER METHODS (Unchanged from your snippet) ---
   Widget _buildSectionHeader(BuildContext context, String title) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
       child: Text(
         title.toUpperCase(),
-        style: TextStyle(
-          fontSize: 12,
-          fontWeight: FontWeight.bold,
-          color: Theme.of(context).colorScheme.secondary,
-          letterSpacing: 1.1,
-        ),
+        style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.secondary, letterSpacing: 1.1),
       ),
     );
   }
 
-  Widget _buildTile(BuildContext context,
-      {required IconData icon, required Color color, required String title, required String subtitle, required VoidCallback onTap}) {
+  Widget _buildTile(BuildContext context, {required IconData icon, required Color color, required String title, required String subtitle, required VoidCallback onTap}) {
     return ListTile(
-      leading: CircleAvatar(
-        backgroundColor: color.withOpacity(0.1),
-        child: Icon(icon, color: color),
-      ),
+      leading: CircleAvatar(backgroundColor: color.withOpacity(0.1), child: Icon(icon, color: color)),
       title: Text(title, style: const TextStyle(fontWeight: FontWeight.w500)),
       subtitle: Text(subtitle, style: const TextStyle(fontSize: 12)),
       trailing: const Icon(Icons.chevron_right, size: 20),
@@ -278,9 +254,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             onPressed: () {
               context.read<InventoryProvider>().clearAll();
               Navigator.pop(ctx);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text("Inventory cleared.")),
-              );
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Inventory cleared.")));
             },
             child: const Text('CLEAR ALL', style: TextStyle(color: Colors.red)),
           ),
@@ -292,9 +266,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _handleImport(BuildContext context) async {
     FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
     if (result == null) return;
-
     final provider = Provider.of<InventoryProvider>(context, listen: false);
-
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(

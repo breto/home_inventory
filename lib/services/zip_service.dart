@@ -3,17 +3,18 @@ import 'package:archive/archive_io.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
-import 'dart:developer' as dev;
+import '../services/logger_service.dart'; // Import your logger
 
 class ZipService {
-  // Point 14: Clear naming to avoid package collisions
   static Future<String> _getDatabasePath() async {
     final dbFolder = await getDatabasesPath();
     return p.join(dbFolder, 'inventory.db');
   }
 
-  /// The main method used by your UI/Provider
+  /// The main method used by your UI/Provider to create a .zip backup
   static Future<File?> createFullBackup(List<String> allImagePaths) async {
+    logger.log("Backup: Starting ZIP creation...");
+
     try {
       final encoder = ZipFileEncoder();
       final tempDir = await getTemporaryDirectory();
@@ -27,39 +28,48 @@ class ZipService {
 
       if (dbFile.existsSync()) {
         encoder.addFile(dbFile);
+        logger.log("Backup: Database file added to ZIP.");
       } else {
-        dev.log("Backup Error: Database file not found at $dbFilePath");
+        logger.log("Backup ERROR: Database file not found at $dbFilePath");
       }
 
-      // 2. Add Images (Point 8 & 11 logic)
+      // 2. Add Images
+      int imageCount = 0;
       for (String path in allImagePaths) {
         if (path.isEmpty) continue;
 
         final imgFile = File(path);
-
-        // Point 8: Verify file exists before archiving
         if (imgFile.existsSync()) {
           encoder.addFile(imgFile);
+          imageCount++;
         } else {
-          // Point 11: Log missing files instead of crashing the process
-          dev.log("Backup Warning: Skipping missing image at $path");
+          logger.log("Backup Warning: Skipping missing image at $path");
         }
       }
 
       encoder.close();
-      return File(zipPath);
+      final finalFile = File(zipPath);
+      final sizeMB = (await finalFile.length() / (1024 * 1024)).toStringAsFixed(2);
+
+      logger.log("Backup: Success! Added $imageCount images. Total size: $sizeMB MB");
+      return finalFile;
     } catch (e) {
-      dev.log("Critical Backup Failure: $e");
+      logger.log("CRITICAL BACKUP FAILURE", error: e);
       return null;
     }
   }
 
+  /// Restores database and images from a selected .zip file
   static Future<bool> importBackup(File zipFile) async {
+    logger.log("Import: Starting restoration from ${zipFile.path}");
+
     try {
       final bytes = await zipFile.readAsBytes();
       final archive = ZipDecoder().decodeBytes(bytes);
       final appDir = await getApplicationDocumentsDirectory();
       final dbPath = await _getDatabasePath();
+
+      int filesRestored = 0;
 
       for (final file in archive) {
         final filename = file.name;
@@ -67,28 +77,31 @@ class ZipService {
           final data = file.content as List<int>;
 
           if (filename == 'inventory.db') {
-            // 1. Handle Database Restore
-            // We write to a temp file first to ensure integrity
+            logger.log("Import: Detected database file. Overwriting current DB...");
+
+            // Handle Database Restore with safety temp file
             final tempDb = File('$dbPath.tmp');
             await tempDb.writeAsBytes(data);
 
-            // Close existing connection before overwriting
+            // Close existing connection before overwriting (via databaseFactory)
             await databaseFactory.deleteDatabase(dbPath);
             await tempDb.rename(dbPath);
+            logger.log("Import: Database successfully replaced.");
           } else {
-            // 2. Handle Images Restore
-            // Reconstruct the image in the app's document folder
+            // Handle Images Restore
             final outFile = File(p.join(appDir.path, filename));
             await outFile.create(recursive: true);
             await outFile.writeAsBytes(data);
+            filesRestored++;
           }
         }
       }
+
+      logger.log("Import: SUCCESS. Restored database and $filesRestored images.");
       return true;
     } catch (e) {
-      dev.log("Import Failure: $e");
+      logger.log("IMPORT FAILURE", error: e);
       return false;
     }
   }
-
 }

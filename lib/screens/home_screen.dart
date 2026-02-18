@@ -6,15 +6,16 @@ import 'package:intl/intl.dart';
 
 import '../providers/inventory_provider.dart';
 import '../providers/settings_provider.dart';
-import '../models/item.dart';
 import '../services/pdf_service.dart';
 import '../services/zip_service.dart';
 import '../services/export_service.dart';
 
+import '../widgets/barcode_scanner.dart';
 import 'add_item_screen.dart';
 import 'item_detail_screen.dart';
 import 'settings_screen.dart';
 import 'fast_add_screen.dart';
+
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -206,15 +207,30 @@ class _HomeScreenState extends State<HomeScreen> {
 
     return AppBar(
       elevation: 0,
+      // Wrap the Title content to prevent the "99999 pixel" overflow
       title: _isSearching
-          ? TextField(
-        controller: _searchController,
-        autofocus: true,
-        decoration: const InputDecoration(hintText: 'Search items, brands, rooms...', border: InputBorder.none),
-        onChanged: (val) => provider.setSearchQuery(val),
+          ? Container(
+        height: 40,
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surfaceVariant.withOpacity(0.5),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: TextField(
+          controller: _searchController,
+          autofocus: true,
+          style: const TextStyle(fontSize: 16),
+          decoration: const InputDecoration(
+            hintText: 'Search...',
+            border: InputBorder.none,
+            prefixIcon: Icon(Icons.search, size: 20),
+            contentPadding: EdgeInsets.symmetric(vertical: 10),
+          ),
+          onChanged: (val) => provider.setSearchQuery(val),
+        ),
       )
           : const Text('My Inventory', style: TextStyle(fontWeight: FontWeight.bold)),
       actions: [
+        // 1. Search Toggle Button (Shows 'Close' when searching)
         IconButton(
           icon: Icon(_isSearching ? Icons.close : Icons.search),
           onPressed: () {
@@ -227,7 +243,25 @@ class _HomeScreenState extends State<HomeScreen> {
             });
           },
         ),
-        if (!_isSearching)
+
+        // Only show these icons if NOT currently searching to save space
+        if (!_isSearching) ...[
+          IconButton(
+            icon: const Icon(Icons.qr_code_scanner_rounded),
+            tooltip: 'Scan Barcode',
+            onPressed: () async {
+              final String? code = await Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const BarcodeScannerWidget()),
+              );
+              if (code != null && mounted) {
+                setState(() {
+                  _isSearching = true;
+                  _searchController.text = code;
+                });
+                provider.setSearchQuery(code);
+              }
+            },
+          ),
           PopupMenuButton<SortOption>(
             icon: const Icon(Icons.sort_rounded),
             onSelected: (option) => provider.setSort(option),
@@ -237,16 +271,15 @@ class _HomeScreenState extends State<HomeScreen> {
               const PopupMenuItem(value: SortOption.date, child: Text("Sort by Date")),
             ],
           ),
-        if (!_isSearching)
           IconButton(
             icon: const Icon(Icons.ios_share),
             onPressed: () => _showExportMenu(context),
           ),
-        if (!_isSearching)
           IconButton(
             icon: const Icon(Icons.settings_outlined),
             onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (context) => const SettingsScreen())),
           ),
+        ],
       ],
     );
   }

@@ -2,6 +2,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import '../models/item.dart';
 import 'dart:developer' as dev;
+import '../services/logger_service.dart'; // Import your new logger
 
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
@@ -22,15 +23,24 @@ class DatabaseHelper {
     final dbPath = await getDatabasesPath();
     final path = join(dbPath, filePath);
 
-    return await openDatabase(
-      path,
-      version: _dbVersion,
-      onCreate: _createDB,
-      onUpgrade: _onUpgrade,
-    );
+    logger.log("Initializing Database at path: $path");
+
+    try {
+      return await openDatabase(
+        path,
+        version: _dbVersion,
+        onCreate: _createDB,
+        onUpgrade: _onUpgrade,
+      );
+    } catch (e) {
+      logger.log("CRITICAL: Database open failed", error: e);
+      rethrow;
+    }
   }
 
   Future _createDB(Database db, int version) async {
+    logger.log("Creating new Database version: $version");
+
     await db.execute('''
       CREATE TABLE items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,55 +68,88 @@ class DatabaseHelper {
 
     final cats = ['Electronics', 'Furniture', 'Jewelry', 'Tools', 'Appliances'];
     for (var c in cats) await db.insert('categories', {'name': c});
+
+    logger.log("Database tables created and seeded with default rooms/categories.");
   }
 
   Future _onUpgrade(Database db, int oldVersion, int newVersion) async {
-    dev.log("Upgrading database from $oldVersion to $newVersion");
+    logger.log("DATABASE UPGRADE: Migrating from $oldVersion to $newVersion");
     if (oldVersion < 5) {
       try {
         await db.execute('ALTER TABLE items ADD COLUMN warrantyExpiry TEXT');
         await db.execute('ALTER TABLE items ADD COLUMN receiptIndices TEXT');
+        logger.log("Migration successful: Added warranty and receipt columns.");
       } catch (e) {
-        dev.log("Migration Note: Columns might already exist. $e");
+        logger.log("Migration Note: Columns might already exist.", error: e);
       }
     }
   }
 
   // --- CRUD OPERATIONS ---
 
-  /// Inserts item and returns the Item object including the new DB ID.
-  /// Crucial for keeping the InventoryProvider in sync without a full reload.
   Future<Item> create(Item item) async {
-    final db = await instance.database;
-    final id = await db.insert('items', item.toMap());
-    return item.copyWith(id: id);
+    try {
+      final db = await instance.database;
+      final id = await db.insert('items', item.toMap());
+      logger.log("DB: Created item '${item.name}' with ID: $id");
+      return item.copyWith(id: id);
+    } catch (e) {
+      logger.log("DB ERROR: Create failed for '${item.name}'", error: e);
+      rethrow;
+    }
   }
 
   Future<List<Item>> readAllItems() async {
-    final db = await instance.database;
-    final result = await db.query('items', orderBy: 'name ASC');
-    return result.map((json) => Item.fromMap(json)).toList();
+    try {
+      final db = await instance.database;
+      final result = await db.query('items', orderBy: 'name ASC');
+      logger.log("DB: Fetched ${result.length} items.");
+      return result.map((json) => Item.fromMap(json)).toList();
+    } catch (e) {
+      logger.log("DB ERROR: ReadAllItems failed", error: e);
+      return [];
+    }
   }
 
   Future<int> update(Item item) async {
-    final db = await instance.database;
-    return await db.update(
-      'items',
-      item.toMap(),
-      where: 'id = ?',
-      whereArgs: [item.id],
-    );
+    try {
+      final db = await instance.database;
+      final rowsAffected = await db.update(
+        'items',
+        item.toMap(),
+        where: 'id = ?',
+        whereArgs: [item.id],
+      );
+      logger.log("DB: Updated item ID ${item.id}. Rows affected: $rowsAffected");
+      return rowsAffected;
+    } catch (e) {
+      logger.log("DB ERROR: Update failed for ID ${item.id}", error: e);
+      rethrow;
+    }
   }
 
   Future<int> delete(int id) async {
-    final db = await instance.database;
-    return await db.delete('items', where: 'id = ?', whereArgs: [id]);
+    try {
+      final db = await instance.database;
+      final rowsAffected = await db.delete('items', where: 'id = ?', whereArgs: [id]);
+      logger.log("DB: Deleted item ID $id. Rows affected: $rowsAffected");
+      return rowsAffected;
+    } catch (e) {
+      logger.log("DB ERROR: Delete failed for ID $id", error: e);
+      rethrow;
+    }
   }
 
-  /// Clears the entire items table.
   Future<int> deleteAllItems() async {
-    final db = await instance.database;
-    return await db.delete('items');
+    try {
+      final db = await instance.database;
+      final count = await db.delete('items');
+      logger.log("DB: CLEARED ALL ITEMS. $count rows removed.");
+      return count;
+    } catch (e) {
+      logger.log("DB ERROR: DeleteAllItems failed", error: e);
+      rethrow;
+    }
   }
 
   // --- LIST HELPERS ---
@@ -118,13 +161,18 @@ class DatabaseHelper {
   }
 
   Future<void> saveRooms(List<String> rooms) async {
-    final db = await database;
-    await db.transaction((txn) async {
-      await txn.delete('rooms');
-      for (var r in rooms) {
-        await txn.insert('rooms', {'name': r}, conflictAlgorithm: ConflictAlgorithm.replace);
-      }
-    });
+    try {
+      final db = await database;
+      await db.transaction((txn) async {
+        await txn.delete('rooms');
+        for (var r in rooms) {
+          await txn.insert('rooms', {'name': r}, conflictAlgorithm: ConflictAlgorithm.replace);
+        }
+      });
+      logger.log("DB: Saved ${rooms.length} rooms.");
+    } catch (e) {
+      logger.log("DB ERROR: SaveRooms failed", error: e);
+    }
   }
 
   Future<List<String>> getCategories() async {
@@ -134,12 +182,17 @@ class DatabaseHelper {
   }
 
   Future<void> saveCategories(List<String> categories) async {
-    final db = await database;
-    await db.transaction((txn) async {
-      await txn.delete('categories');
-      for (var c in categories) {
-        await txn.insert('categories', {'name': c}, conflictAlgorithm: ConflictAlgorithm.replace);
-      }
-    });
+    try {
+      final db = await database;
+      await db.transaction((txn) async {
+        await txn.delete('categories');
+        for (var c in categories) {
+          await txn.insert('categories', {'name': c}, conflictAlgorithm: ConflictAlgorithm.replace);
+        }
+      });
+      logger.log("DB: Saved ${categories.length} categories.");
+    } catch (e) {
+      logger.log("DB ERROR: SaveCategories failed", error: e);
+    }
   }
 }

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import '../services/logger_service.dart';
 
 class BarcodeScannerWidget extends StatefulWidget {
   const BarcodeScannerWidget({super.key});
@@ -29,7 +30,6 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget> {
             icon: ValueListenableBuilder(
               valueListenable: cameraController,
               builder: (context, state, child) {
-                // We handle all three states: off, on, and auto
                 switch (state.torchState) {
                   case TorchState.off:
                     return const Icon(Icons.flash_off, color: Colors.grey);
@@ -38,8 +38,7 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget> {
                   case TorchState.auto:
                     return const Icon(Icons.flash_auto, color: Colors.blueAccent);
                   case TorchState.unavailable:
-                    // TODO: Handle this case.
-                    throw UnimplementedError();
+                    return const Icon(Icons.flash_off, color: Colors.black26);
                 }
               },
             ),
@@ -49,11 +48,17 @@ class _BarcodeScannerWidgetState extends State<BarcodeScannerWidget> {
       ),
       body: MobileScanner(
         controller: cameraController,
-        onDetect: (BarcodeCapture capture) { // Explicitly define BarcodeCapture
+        onDetect: (BarcodeCapture capture) {
           final List<Barcode> barcodes = capture.barcodes;
           if (barcodes.isNotEmpty) {
             final String code = barcodes.first.rawValue ?? "Unknown";
+
+            // Log the successful scan
+            logger.log("Barcode Scanned successfully: $code");
+
             Navigator.pop(context, code);
+          } else {
+            logger.log("Scanner triggered but no barcode data detected.");
           }
         },
       ),

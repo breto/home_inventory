@@ -27,7 +27,6 @@ class InventoryProvider with ChangeNotifier {
     notifyListeners();
 
     try {
-      // Fetch everything in parallel for better startup speed
       final results = await Future.wait([
         DatabaseHelper.instance.readAllItems(),
         DatabaseHelper.instance.getRooms(),
@@ -49,62 +48,62 @@ class InventoryProvider with ChangeNotifier {
     await initializeData();
   }
 
-  // --- SEARCH ---
+  // --- SEARCH & FILTERING ---
 
   void setSearchQuery(String query) {
     _searchQuery = query;
     notifyListeners();
   }
 
-  List<Item> get filteredItems {
-    List<Item> list = _items;
+  void setSort(SortOption option) {
+    _currentSort = option;
+    notifyListeners();
+  }
 
-    // 1. Filter
+  List<Item> get filteredItems {
+    // Start with a copy to avoid mutating the master list during sorting
+    List<Item> list = [..._items];
+
+    // 1. GLOBAL SEARCH FILTER
     if (_searchQuery.isNotEmpty) {
       final query = _searchQuery.toLowerCase();
       list = list.where((item) {
         return item.name.toLowerCase().contains(query) ||
+            (item.brand?.toLowerCase().contains(query) ?? false) ||
+            (item.model?.toLowerCase().contains(query) ?? false) ||
+            (item.serialNumber?.toLowerCase().contains(query) ?? false) ||
             (item.room?.toLowerCase().contains(query) ?? false) ||
-            (item.brand?.toLowerCase().contains(query) ?? false); // ... add other fields
+            (item.category?.toLowerCase().contains(query) ?? false) ||
+            (item.notes?.toLowerCase().contains(query) ?? false);
       }).toList();
     }
 
-    // 2. Sort
+    // 2. SORTING LOGIC
     switch (_currentSort) {
       case SortOption.name:
         list.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
         break;
       case SortOption.value:
-        list.sort((a, b) => b.value.compareTo(a.value)); // Descending (highest first)
+        list.sort((a, b) => b.value.compareTo(a.value)); // High to Low
         break;
       case SortOption.date:
-        list.sort((a, b) => b.purchaseDate.compareTo(a.purchaseDate)); // Newest first
+      // Sort by purchase date (Newest first)
+        list.sort((a, b) => b.purchaseDate.compareTo(a.purchaseDate));
         break;
     }
     return list;
   }
 
-  void setSort(SortOption option) {
-    _currentSort = option;
-    notifyListeners(); // This tells the HomeScreen to rebuild with the new order
-  }
-
-  // --- ACTIONS (Optimized for Speed) ---
+  // --- ACTIONS ---
 
   Future<void> addItem(Item item) async {
-    // 1. Save to DB and get the generated ID
     final newItem = await DatabaseHelper.instance.create(item);
-
-    // 2. Update local memory instead of re-reading the whole DB
     _items.add(newItem);
     notifyListeners();
   }
 
   Future<void> updateItem(Item item) async {
-    // 1. Update DB
     await DatabaseHelper.instance.update(item);
-
-    // 2. Update local list efficiently
     final index = _items.indexWhere((element) => element.id == item.id);
     if (index != -1) {
       _items[index] = item;
@@ -113,10 +112,7 @@ class InventoryProvider with ChangeNotifier {
   }
 
   Future<void> deleteItem(int id) async {
-    // 1. Delete from DB
     await DatabaseHelper.instance.delete(id);
-
-    // 2. Remove from local memory
     _items.removeWhere((item) => item.id == id);
     notifyListeners();
   }
@@ -156,7 +152,6 @@ class InventoryProvider with ChangeNotifier {
   }
 
   Future<void> clearAll() async {
-    // Make sure your DatabaseHelper actually supports a truncate/delete all
     await DatabaseHelper.instance.deleteAllItems();
     _items.clear();
     notifyListeners();
