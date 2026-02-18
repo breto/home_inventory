@@ -1,35 +1,116 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; // Added for clipboard functionality
+import 'package:flutter/services.dart'; // For Clipboard
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import '../models/item.dart';
 import '../providers/inventory_provider.dart';
 import 'add_item_screen.dart';
 
-class ItemDetailScreen extends StatelessWidget {
-  final int itemId;
-  const ItemDetailScreen({super.key, required this.itemId});
+class ItemDetailScreen extends StatefulWidget {
+  final int? itemId;
+  final Item? item; // Optimization: Pass object for instant load
+
+  const ItemDetailScreen({
+    super.key,
+    this.itemId,
+    this.item,
+  });
 
   @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final provider = context.watch<InventoryProvider>();
+  State<ItemDetailScreen> createState() => _ItemDetailScreenState();
+}
 
-    // Find item or return fallback
-    final item = provider.items.firstWhere(
-          (i) => i.id == itemId,
-      orElse: () => Item(
-        name: 'Deleted',
-        imagePaths: [],
-        value: 0,
-        purchaseDate: DateTime.now(),
+class _ItemDetailScreenState extends State<ItemDetailScreen> {
+  late Item _item;
+  bool _isLoading = true;
+  bool _isDeleted = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeItem();
+  }
+
+  void _initializeItem() {
+    // 1. Instant Load: Use passed object if available
+    if (widget.item != null) {
+      _item = widget.item!;
+      _isLoading = false;
+      return;
+    }
+
+    // 2. Fallback: Fetch from Provider using ID
+    if (widget.itemId != null) {
+      final provider = Provider.of<InventoryProvider>(context, listen: false);
+      try {
+        _item = provider.items.firstWhere((i) => i.id == widget.itemId);
+        _isLoading = false;
+      } catch (e) {
+        // Item not found (likely deleted)
+        _isDeleted = true;
+        _isLoading = false;
+      }
+    } else {
+      _isDeleted = true;
+      _isLoading = false;
+    }
+  }
+
+  /// Reloads item data from Provider (useful after Editing)
+  void _refreshItem() {
+    if (_isDeleted) return;
+    final provider = Provider.of<InventoryProvider>(context, listen: false);
+    try {
+      final freshItem = provider.items.firstWhere((i) => i.id == _item.id);
+      setState(() {
+        _item = freshItem;
+      });
+    } catch (e) {
+      setState(() => _isDeleted = true);
+    }
+  }
+
+  Future<void> _confirmDelete() async {
+    final provider = Provider.of<InventoryProvider>(context, listen: false);
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Delete Item?"),
+        content: Text("This will permanently remove '${_item.name}' from your inventory."),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("CANCEL")),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text("DELETE"),
+          ),
+        ],
       ),
     );
 
-    if (item.name == 'Deleted') {
-      return const Scaffold(body: Center(child: Text("Item no longer exists.")));
+    if (confirmed == true && mounted) {
+      await provider.deleteItem(_item.id!);
+      if (mounted) Navigator.pop(context);
     }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    if (_isDeleted) return const Scaffold(body: Center(child: Text("Item no longer exists.")));
+
+    // Watch for external updates (e.g. background sync or batch delete)
+    final provider = context.watch<InventoryProvider>();
+    try {
+      // Sync local item with provider state if possible
+      _item = provider.items.firstWhere((i) => i.id == _item.id, orElse: () => _item);
+    } catch (e) {
+      // If provider is empty/cleared, keep showing local copy or exit
+    }
+
+    final theme = Theme.of(context);
 
     return Scaffold(
       appBar: AppBar(
@@ -38,15 +119,18 @@ class ItemDetailScreen extends StatelessWidget {
           IconButton(
             icon: const Icon(Icons.edit_outlined),
             tooltip: 'Edit Item',
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => AddItemScreen(itemToEdit: item)),
-            ),
+            onPressed: () async {
+              await Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => AddItemScreen(itemToEdit: _item)),
+              );
+              _refreshItem(); // Update UI with edited values
+            },
           ),
           IconButton(
             icon: const Icon(Icons.delete_outline),
             tooltip: 'Delete Item',
-            onPressed: () => _confirmDelete(context, provider, item),
+            onPressed: _confirmDelete,
           ),
         ],
       ),
@@ -54,26 +138,27 @@ class ItemDetailScreen extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _buildImageGallery(context, item),
+            _buildImageGallery(context, _item),
             Padding(
               padding: const EdgeInsets.all(20.0),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _buildHeader(theme, item),
+                  _buildHeader(theme, _item),
                   const SizedBox(height: 24),
 
-                  // Priority Insurance Info
-                  if (item.warrantyExpiry != null) _buildWarrantyCard(theme, item),
-                  if (item.serialNumber != null) _buildSerialCard(context, theme, item.serialNumber!),
+                  // Priority Cards
+                  if (_item.warrantyExpiry != null) _buildWarrantyCard(theme, _item),
+                  if (_item.serialNumber != null && _item.serialNumber!.isNotEmpty)
+                    _buildSerialCard(context, theme, _item.serialNumber!),
 
                   const Divider(height: 40),
 
                   // Specifics Grid
-                  _buildInfoGrid(theme, item),
+                  _buildInfoGrid(theme, _item),
 
                   const SizedBox(height: 24),
-                  if (item.notes != null && item.notes!.isNotEmpty) _buildNotes(theme, item),
+                  if (_item.notes != null && _item.notes!.isNotEmpty) _buildNotes(theme, _item),
                   const SizedBox(height: 40),
                 ],
               ),
@@ -87,17 +172,32 @@ class ItemDetailScreen extends StatelessWidget {
   // --- UI COMPONENTS ---
 
   Widget _buildImageGallery(BuildContext context, Item item) {
-    if (item.imagePaths.isEmpty) return const SizedBox.shrink();
+    if (item.imagePaths.isEmpty) {
+      return Container(
+        height: 200,
+        width: double.infinity,
+        color: Colors.grey[200],
+        child: const Icon(Icons.image_not_supported, size: 64, color: Colors.grey),
+      );
+    }
+
     return SizedBox(
       height: 320,
       child: PageView.builder(
         itemCount: item.imagePaths.length,
         itemBuilder: (context, index) {
+          final path = item.imagePaths[index];
+          final file = File(path);
           final bool isReceipt = item.receiptIndices.contains(index);
+
           return Stack(
             fit: StackFit.expand,
             children: [
-              Image.file(File(item.imagePaths[index]), fit: BoxFit.cover),
+              if (file.existsSync())
+                Image.file(file, fit: BoxFit.cover)
+              else
+                Container(color: Colors.grey, child: const Icon(Icons.broken_image)),
+
               if (isReceipt)
                 Positioned(
                   top: 16, right: 16,
@@ -106,6 +206,17 @@ class ItemDetailScreen extends StatelessWidget {
                     side: BorderSide.none,
                     label: const Text("RECEIPT", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 10)),
                     avatar: const Icon(Icons.receipt_long, color: Colors.white, size: 14),
+                  ),
+                ),
+
+              // Page Indicator (e.g., 1/3)
+              if (item.imagePaths.length > 1)
+                Positioned(
+                  bottom: 16, right: 16,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(20)),
+                    child: Text("${index + 1} / ${item.imagePaths.length}", style: const TextStyle(color: Colors.white, fontSize: 12)),
                   ),
                 ),
             ],
@@ -252,28 +363,6 @@ class ItemDetailScreen extends StatelessWidget {
           child: Text(item.notes!, style: const TextStyle(height: 1.5)),
         ),
       ],
-    );
-  }
-
-  void _confirmDelete(BuildContext context, InventoryProvider provider, Item item) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text("Delete Item?"),
-        content: Text("This will permanently remove ${item.name} from your inventory."),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("CANCEL")),
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () {
-              provider.deleteItem(item.id!);
-              Navigator.pop(ctx);
-              Navigator.pop(context);
-            },
-            child: const Text("DELETE"),
-          ),
-        ],
-      ),
     );
   }
 }

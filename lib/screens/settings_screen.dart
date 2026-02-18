@@ -2,12 +2,18 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
+
+// Providers
 import '../providers/inventory_provider.dart';
 import '../providers/settings_provider.dart';
+
+// Services
 import '../services/zip_service.dart';
 import '../services/demo_service.dart';
+
+// Screens
 import 'list_management_screen.dart';
-import 'dev_logs_screen.dart'; // <--- NEW IMPORT
+import 'dev_logs_screen.dart';
 
 const bool _showDebugOptions = true;
 
@@ -19,6 +25,7 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  // Controllers for Insurance Profile
   late TextEditingController _nameController;
   late TextEditingController _companyController;
   late TextEditingController _addressController;
@@ -27,6 +34,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
+    // Pre-fill controllers with current data from SettingsProvider
     final settings = context.read<SettingsProvider>();
     _nameController = TextEditingController(text: settings.userName);
     _companyController = TextEditingController(text: settings.insuranceCompany);
@@ -46,77 +54,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    // Watch settings to update UI if theme/values change elsewhere
     final settingsProvider = context.watch<SettingsProvider>();
 
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
       body: ListView(
         children: [
+          // --- INSURANCE SECTION ---
           _buildSectionHeader(context, 'Insurance Profile'),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-            child: Column(
-              children: [
-                TextField(
-                  controller: _nameController,
-                  decoration: const InputDecoration(
-                    labelText: "Policy Holder Name",
-                    prefixIcon: Icon(Icons.person_outline),
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _companyController,
-                  decoration: const InputDecoration(
-                    labelText: "Insurance Company",
-                    prefixIcon: Icon(Icons.business_outlined),
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _policyController,
-                  decoration: const InputDecoration(
-                    labelText: "Policy Number",
-                    prefixIcon: Icon(Icons.description_outlined),
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _addressController,
-                  maxLines: 2,
-                  decoration: const InputDecoration(
-                    labelText: "Property Address",
-                    prefixIcon: Icon(Icons.home_outlined),
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    onPressed: () {
-                      settingsProvider.updateProfile(
-                        _nameController.text,
-                        _addressController.text,
-                        _policyController.text,
-                        _companyController.text,
-                      );
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text("Profile Saved Successfully"), behavior: SnackBarBehavior.floating),
-                      );
-                    },
-                    icon: const Icon(Icons.save),
-                    label: const Text("Save Insurance Info"),
-                  ),
-                ),
-              ],
-            ),
-          ),
+          _buildInsuranceForm(context, settingsProvider),
 
           const Divider(),
+
+          // --- APPEARANCE SECTION ---
           _buildSectionHeader(context, 'Appearance'),
           ListTile(
             leading: const CircleAvatar(child: Icon(Icons.palette_outlined)),
@@ -124,6 +75,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             subtitle: Text("Currently: ${settingsProvider.themeMode.name.toUpperCase()}"),
             trailing: DropdownButton<ThemeMode>(
               value: settingsProvider.themeMode,
+              underline: const SizedBox(), // Remove ugly underline
               onChanged: (ThemeMode? newMode) {
                 if (newMode != null) settingsProvider.setThemeMode(newMode);
               },
@@ -136,6 +88,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
 
           const Divider(),
+
+          // --- DATA MANAGEMENT SECTION ---
           _buildSectionHeader(context, 'Data Management'),
           _buildTile(
             context,
@@ -143,14 +97,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             color: Colors.blue,
             title: 'Export Backup',
             subtitle: 'Create a .zip file with all data and photos',
-            onTap: () async {
-              final provider = Provider.of<InventoryProvider>(context, listen: false);
-              final allImages = provider.items.expand((item) => item.imagePaths).toList();
-              File? zip = await ZipService.createFullBackup(allImages);
-              if (zip != null && context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Backup created at: ${zip.path}')));
-              }
-            },
+            onTap: () => _handleExport(context),
           ),
           _buildTile(
             context,
@@ -162,6 +109,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
 
           const Divider(),
+
+          // --- ORGANIZATION SECTION ---
           _buildSectionHeader(context, 'Organization'),
           _buildTile(
             context,
@@ -169,7 +118,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             color: theme.colorScheme.primary,
             title: 'Manage Rooms',
             subtitle: 'Add or remove locations in your home',
-            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ListManagementScreen(isRoom: true))),
+            onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const ListManagementScreen(isRoom: true))
+            ),
           ),
           _buildTile(
             context,
@@ -177,20 +129,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
             color: theme.colorScheme.primary,
             title: 'Manage Categories',
             subtitle: 'Define item types (Electronics, Tools, etc.)',
-            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ListManagementScreen(isRoom: false))),
+            onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const ListManagementScreen(isRoom: false))
+            ),
           ),
 
+          // --- DEBUG SECTION ---
           if (_showDebugOptions) ...[
             const Divider(),
             _buildSectionHeader(context, 'Developer Tools'),
-            // --- NEW: LOG VIEWER TILE ---
             _buildTile(
               context,
               icon: Icons.bug_report_outlined,
               color: Colors.teal,
               title: 'System Logs',
               subtitle: 'View recent scan events and errors',
-              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DevLogsScreen())),
+              onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const DevLogsScreen())
+              ),
             ),
             _buildTile(
               context,
@@ -198,13 +156,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               color: Colors.purple,
               title: 'Load Demo Data',
               subtitle: 'Add sample items to test PDF and UI',
-              onTap: () async {
-                final provider = context.read<InventoryProvider>();
-                await DemoService.populateDemoData(provider);
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Demo data loaded!")));
-                }
-              },
+              onTap: () => _handleLoadDemoData(context),
             ),
             _buildTile(
               context,
@@ -215,26 +167,109 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onTap: () => _confirmClearAll(context),
             ),
           ],
-          const SizedBox(height: 30),
+          const SizedBox(height: 50), // Bottom padding
         ],
       ),
     );
   }
 
-  // --- HELPER METHODS (Unchanged from your snippet) ---
-  Widget _buildSectionHeader(BuildContext context, String title) {
+  // --- SUB-WIDGETS ---
+
+  Widget _buildInsuranceForm(BuildContext context, SettingsProvider settings) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
-      child: Text(
-        title.toUpperCase(),
-        style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.secondary, letterSpacing: 1.1),
+      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+      child: Column(
+        children: [
+          TextField(
+            controller: _nameController,
+            decoration: const InputDecoration(
+              labelText: "Policy Holder Name",
+              prefixIcon: Icon(Icons.person_outline),
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _companyController,
+            decoration: const InputDecoration(
+              labelText: "Insurance Company",
+              prefixIcon: Icon(Icons.business_outlined),
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _policyController,
+            decoration: const InputDecoration(
+              labelText: "Policy Number",
+              prefixIcon: Icon(Icons.description_outlined),
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _addressController,
+            maxLines: 2,
+            decoration: const InputDecoration(
+              labelText: "Property Address",
+              prefixIcon: Icon(Icons.home_outlined),
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: () {
+                settings.updateProfile(
+                  _nameController.text,
+                  _addressController.text,
+                  _policyController.text,
+                  _companyController.text,
+                );
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text("Profile Saved Successfully"),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+              },
+              icon: const Icon(Icons.save),
+              label: const Text("Save Insurance Info"),
+            ),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildTile(BuildContext context, {required IconData icon, required Color color, required String title, required String subtitle, required VoidCallback onTap}) {
+  Widget _buildSectionHeader(BuildContext context, String title) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
+      child: Text(
+        title.toUpperCase(),
+        style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+            color: Theme.of(context).colorScheme.secondary,
+            letterSpacing: 1.1
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTile(BuildContext context, {
+    required IconData icon,
+    required Color color,
+    required String title,
+    required String subtitle,
+    required VoidCallback onTap
+  }) {
     return ListTile(
-      leading: CircleAvatar(backgroundColor: color.withOpacity(0.1), child: Icon(icon, color: color)),
+      leading: CircleAvatar(
+          backgroundColor: color.withOpacity(0.1),
+          child: Icon(icon, color: color)
+      ),
       title: Text(title, style: const TextStyle(fontWeight: FontWeight.w500)),
       subtitle: Text(subtitle, style: const TextStyle(fontSize: 12)),
       trailing: const Icon(Icons.chevron_right, size: 20),
@@ -242,47 +277,128 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  void _confirmClearAll(BuildContext context) {
+  // --- ACTIONS & LOGIC ---
+
+  Future<void> _handleExport(BuildContext context) async {
+    final provider = Provider.of<InventoryProvider>(context, listen: false);
+
+    // Collect all image paths from all items
+    // (Ensure your Item model exposes imagePaths)
+    final allImages = provider.items.expand((item) => item.imagePaths).toList();
+
+    // Trigger Service
+    File? zip = await ZipService.createFullBackup(allImages);
+
+    if (!context.mounted) return;
+
+    if (zip != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Backup created at: ${zip.path}'))
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Backup failed or cancelled.'))
+      );
+    }
+  }
+
+  Future<void> _handleImport(BuildContext context) async {
+    // Pick file
+    FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['zip']
+    );
+
+    if (result == null || result.files.single.path == null) return;
+    final File zipFile = File(result.files.single.path!);
+
+    if (!context.mounted) return;
+
+    // Confirm dialog
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Wipe All Data?'),
-        content: const Text('This will permanently delete your entire inventory. This action cannot be undone.'),
+        title: const Text('Restore Data?'),
+        content: const Text(
+          'This will overwrite your current inventory with the backup.\n\n'
+              'This action cannot be undone.',
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('CANCEL')),
           TextButton(
-            onPressed: () {
-              context.read<InventoryProvider>().clearAll();
-              Navigator.pop(ctx);
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Inventory cleared.")));
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('CANCEL')
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(ctx); // Close dialog
+              await _executeImport(context, zipFile);
             },
-            child: const Text('CLEAR ALL', style: TextStyle(color: Colors.red)),
+            child: const Text('RESTORE'),
           ),
         ],
       ),
     );
   }
 
-  Future<void> _handleImport(BuildContext context) async {
-    FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['zip']);
-    if (result == null) return;
+  Future<void> _executeImport(BuildContext context, File zipFile) async {
     final provider = Provider.of<InventoryProvider>(context, listen: false);
+
+    // 1. Run unzip logic
+    bool success = await ZipService.importBackup(zipFile);
+
+    if (!context.mounted) return;
+
+    if (success) {
+      // 2. Refresh Provider using the NEW method name
+      await provider.initializeData();
+
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Backup restored successfully!"))
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Failed to restore backup."))
+      );
+    }
+  }
+
+  Future<void> _handleLoadDemoData(BuildContext context) async {
+    final provider = context.read<InventoryProvider>();
+    await DemoService.populateDemoData(provider);
+
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Demo data loaded!"))
+      );
+    }
+  }
+
+  void _confirmClearAll(BuildContext context) {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Restore Data?'),
-        content: const Text('This will overwrite your current inventory. Continue?'),
+        title: const Text('Wipe All Data?'),
+        content: const Text(
+          'This will permanently delete your entire inventory (Database & Images).\n\n'
+              'This action cannot be undone.',
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('CANCEL')),
-          ElevatedButton(
+          TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('CANCEL')
+          ),
+          TextButton(
             onPressed: () async {
               Navigator.pop(ctx);
-              bool success = await ZipService.importBackup(File(result.files.single.path!));
-              if (success) {
-                await provider.refreshAfterImport();
+              await context.read<InventoryProvider>().clearAll();
+
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text("Inventory cleared."))
+                );
               }
             },
-            child: const Text('RESTORE'),
+            child: const Text('CLEAR ALL', style: TextStyle(color: Colors.red)),
           ),
         ],
       ),

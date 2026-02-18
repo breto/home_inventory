@@ -160,7 +160,8 @@ import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import '../models/item.dart';
 import '../services/logger_service.dart';
-import '../providers/inventory_provider.dart'; // Needed for SortOption enum
+import '../providers/inventory_provider.dart';
+import '../utils/app_constants.dart'; // NEW IMPORT
 
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
@@ -169,7 +170,7 @@ class DatabaseHelper {
   DatabaseHelper._init();
 
   static const String _dbName = 'inventory.db';
-  static const int _dbVersion = 5;
+  static const int _dbVersion = 6;
 
   Future<Database> get database async {
     if (_database != null) return _database!;
@@ -180,23 +181,16 @@ class DatabaseHelper {
   Future<Database> _initDB(String filePath) async {
     final dbPath = await getDatabasesPath();
     final path = join(dbPath, filePath);
-
     logger.log("DB: Initializing at $path");
 
-    try {
-      return await openDatabase(
-        path,
-        version: _dbVersion,
-        onCreate: _createDB,
-        onUpgrade: _onUpgrade,
-      );
-    } catch (e) {
-      logger.log("CRITICAL: Database open failed", error: e);
-      rethrow;
-    }
+    return await openDatabase(
+      path,
+      version: _dbVersion,
+      onCreate: _createDB,
+      onUpgrade: _onUpgrade,
+    );
   }
 
-  /// Closes the connection (Required for Zip Restore)
   Future<void> close() async {
     final db = _database;
     if (db != null) {
@@ -207,6 +201,7 @@ class DatabaseHelper {
   }
 
   Future _createDB(Database db, int version) async {
+    // 1. Items Table
     await db.execute('''
       CREATE TABLE items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -225,88 +220,109 @@ class DatabaseHelper {
       )
     ''');
 
+    // 2. Metadata Tables
     await db.execute('CREATE TABLE rooms (name TEXT PRIMARY KEY)');
     await db.execute('CREATE TABLE categories (name TEXT PRIMARY KEY)');
 
-    // Seed Data
-    final rooms = ['Living Room', 'Kitchen', 'Bedroom', 'Garage', 'Office'];
-    for (var r in rooms) await db.insert('rooms', {'name': r});
+    // 3. Seed Data from Constants (NO HARDCODING HERE)
+    final batch = db.batch();
+    for (var r in AppConstants.defaultRooms) {
+      batch.insert('rooms', {'name': r}, conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+    for (var c in AppConstants.defaultCategories) {
+      batch.insert('categories', {'name': c}, conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+    await batch.commit(noResult: true);
 
-    final cats = ['Electronics', 'Furniture', 'Jewelry', 'Tools', 'Appliances'];
-    for (var c in cats) await db.insert('categories', {'name': c});
+    // 4. FTS Setup
+    await _setupFTS(db);
 
-    logger.log("DB: Created tables and seeded data.");
+    logger.log("DB: Created and Seeded.");
   }
 
   Future _onUpgrade(Database db, int oldVersion, int newVersion) async {
-    logger.log("DB: Upgrading from $oldVersion to $newVersion");
     if (oldVersion < 5) {
       try {
         await db.execute('ALTER TABLE items ADD COLUMN warrantyExpiry TEXT');
         await db.execute('ALTER TABLE items ADD COLUMN receiptIndices TEXT');
-      } catch (e) {
-        // Column likely exists
-      }
+      } catch (e) {}
+    }
+    if (oldVersion < 6) {
+      await _setupFTS(db);
+      await db.execute('''
+        INSERT INTO items_fts(docid, name, brand, model, serialNumber, room, category, notes)
+        SELECT id, name, brand, model, serialNumber, room, category, notes FROM items
+      ''');
     }
   }
 
-  // --- OPTIMIZED SEARCH & SORT ---
+  Future<void> _setupFTS(Database db) async {
+    await db.execute('''
+      CREATE VIRTUAL TABLE items_fts USING fts4(
+        content="items",
+        name, brand, model, serialNumber, room, category, notes
+      )
+    ''');
+    await db.execute('''
+      CREATE TRIGGER items_bu AFTER INSERT ON items BEGIN
+        INSERT INTO items_fts(docid, name, brand, model, serialNumber, room, category, notes)
+        VALUES(new.id, new.name, new.brand, new.model, new.serialNumber, new.room, new.category, new.notes);
+      END;
+    ''');
+    await db.execute('''
+      CREATE TRIGGER items_bd AFTER DELETE ON items BEGIN
+        DELETE FROM items_fts WHERE docid = old.id;
+      END;
+    ''');
+    await db.execute('''
+      CREATE TRIGGER items_bu_update AFTER UPDATE ON items BEGIN
+        DELETE FROM items_fts WHERE docid = old.id;
+        INSERT INTO items_fts(docid, name, brand, model, serialNumber, room, category, notes)
+        VALUES(new.id, new.name, new.brand, new.model, new.serialNumber, new.room, new.category, new.notes);
+      END;
+    ''');
+  }
 
-  /// SCALABLE QUERY: Performs filtering and sorting inside SQLite.
-  /// This prevents loading 1000s of items into RAM just to sort them.
+  // --- QUERIES ---
+
   Future<List<Item>> queryItems({
     required String query,
-    required SortOption sortOption
+    required SortOption sortOption,
+    int limit = 20,
+    int offset = 0,
   }) async {
     final db = await instance.database;
-
     String orderBy;
     switch (sortOption) {
-      case SortOption.name:
-        orderBy = 'name ASC';
-        break;
-      case SortOption.value:
-        orderBy = 'value DESC'; // Highest value first
-        break;
-      case SortOption.date:
-        orderBy = 'purchaseDate DESC'; // Newest first
-        break;
+      case SortOption.name:  orderBy = 'name ASC'; break;
+      case SortOption.value: orderBy = 'value DESC'; break;
+      case SortOption.date:  orderBy = 'purchaseDate DESC'; break;
     }
 
-    // If query is empty, return all (sorted)
     if (query.trim().isEmpty) {
-      final result = await db.query('items', orderBy: orderBy);
+      final result = await db.query('items', orderBy: orderBy, limit: limit, offset: offset);
       return result.map((json) => Item.fromMap(json)).toList();
     }
 
-    // If query exists, search across multiple columns
-    final searchPattern = '%${query.toLowerCase()}%';
+    final sanitized = query.replaceAll(RegExp(r'[^\w\s\-]'), '');
+    if (sanitized.isEmpty) return [];
 
-    // SQLite "LIKE" is case-insensitive by default in standard builds,
-    // but we use LOWER() to be safe across all Android versions.
-    final whereClause = '''
-      LOWER(name) LIKE ? OR 
-      LOWER(brand) LIKE ? OR 
-      LOWER(model) LIKE ? OR 
-      LOWER(serialNumber) LIKE ? OR 
-      LOWER(room) LIKE ? OR 
-      LOWER(category) LIKE ? OR 
-      LOWER(notes) LIKE ?
+    final sql = '''
+      SELECT items.* FROM items 
+      JOIN items_fts ON items.id = items_fts.docid
+      WHERE items_fts MATCH '$sanitized*' 
+      ORDER BY items.$orderBy
+      LIMIT $limit OFFSET $offset
     ''';
 
-    final args = List.filled(7, searchPattern); // Fill args for the 7 ? placeholders
-
-    final result = await db.query(
-      'items',
-      where: whereClause,
-      whereArgs: args,
-      orderBy: orderBy,
-    );
-
-    return result.map((json) => Item.fromMap(json)).toList();
+    try {
+      final result = await db.rawQuery(sql);
+      return result.map((json) => Item.fromMap(json)).toList();
+    } catch (e) {
+      return [];
+    }
   }
 
-  /// AGGREGATE: Calculates total value instantly without fetching items
   Future<double> getTotalValue() async {
     final db = await instance.database;
     final result = await db.rawQuery('SELECT SUM(value) as total FROM items');
@@ -316,12 +332,10 @@ class DatabaseHelper {
     return 0.0;
   }
 
-  // --- STANDARD CRUD ---
-
+  // --- CRUD ---
   Future<Item> create(Item item) async {
     final db = await instance.database;
     final id = await db.insert('items', item.toMap());
-    logger.log("DB: Created Item ID $id");
     return item.copyWith(id: id);
   }
 
@@ -346,7 +360,7 @@ class DatabaseHelper {
     return await db.delete('items');
   }
 
-  // --- METADATA ---
+  // --- METADATA (Low Level) ---
 
   Future<List<String>> getRooms() async {
     final db = await database;
@@ -497,19 +511,30 @@ class Item {
 PATH: .\lib\providers\inventory_provider.dart
 ============================================================
 
+import 'dart:async'; // NEW: Required for Timer
 import 'package:flutter/material.dart';
 import '../models/item.dart';
-import '../data/database_helper.dart';
+import '../repositories/inventory_repository.dart';
 import '../services/logger_service.dart';
 
 enum SortOption { name, value, date }
 
 class InventoryProvider with ChangeNotifier {
-  // The list now only holds what is currently VISIBLE to the user
+  // Dependency Injection: Repository handles Data/Files
+  final InventoryRepository _repository = InventoryRepository();
+
+  // --- DEBOUNCE TIMER ---
+  Timer? _debounce; // NEW: Holds the active timer
+
+  // --- PAGINATION STATE ---
   List<Item> _items = [];
   bool _isLoading = false;
+  bool _isLoadingMore = false;
+  bool _hasMoreData = true;
+  int _currentPage = 0;
+  static const int _pageSize = 20;
 
-  // Search State
+  // Search & Sort State
   String _searchQuery = '';
   SortOption _currentSort = SortOption.name;
 
@@ -518,31 +543,30 @@ class InventoryProvider with ChangeNotifier {
 
   // Getters
   List<Item> get items => _items;
-  // Backward compatibility getter if UI uses filteredItems
   List<Item> get filteredItems => _items;
 
   bool get isLoading => _isLoading;
+  bool get isLoadingMore => _isLoadingMore;
   String get searchQuery => _searchQuery;
   SortOption get currentSort => _currentSort;
   double get totalValue => _totalValue;
+
+  // --- LIFECYCLE ---
+
+  @override
+  void dispose() {
+    _debounce?.cancel(); // NEW: Cleanup timer on dispose
+    super.dispose();
+  }
 
   // --- INITIALIZATION ---
 
   Future<void> initializeData() async {
     _isLoading = true;
     notifyListeners();
-
-    try {
-      await Future.wait([
-        _performQuery(), // Loads items based on defaults
-        _refreshTotalValue(), // Calculates $$
-      ]);
-    } catch (e) {
-      logger.log("InventoryProvider Error: Init failed", error: e);
-    } finally {
-      _isLoading = false;
-      notifyListeners();
-    }
+    await _resetAndReload();
+    _isLoading = false;
+    notifyListeners();
   }
 
   Future<void> refreshAfterImport() async {
@@ -550,89 +574,122 @@ class InventoryProvider with ChangeNotifier {
   }
 
   Future<void> _refreshTotalValue() async {
-    // We calculate total value from DB directly
-    _totalValue = await DatabaseHelper.instance.getTotalValue();
+    _totalValue = await _repository.getTotalValue();
   }
 
-  // --- CORE SEARCH & FILTER ENGINE ---
+  /// Resets pagination and loads Page 0
+  Future<void> _resetAndReload() async {
+    _currentPage = 0;
+    _hasMoreData = true;
+    _items.clear();
 
-  Future<void> _performQuery() async {
+    await _performQuery();
+    await _refreshTotalValue();
+  }
+
+  // --- PAGINATION LOGIC ---
+
+  Future<void> loadNextPage() async {
+    if (_isLoadingMore || !_hasMoreData) return;
+
+    _isLoadingMore = true;
+    notifyListeners();
+
+    _currentPage++;
+    await _performQuery(isLoadMore: true);
+
+    _isLoadingMore = false;
+    notifyListeners();
+  }
+
+  Future<void> _performQuery({bool isLoadMore = false}) async {
     try {
-      _items = await DatabaseHelper.instance.queryItems(
-          query: _searchQuery,
-          sortOption: _currentSort
+      final newItems = await _repository.getItems(
+        query: _searchQuery,
+        sortOption: _currentSort,
+        limit: _pageSize,
+        offset: _currentPage * _pageSize,
       );
+
+      if (newItems.length < _pageSize) {
+        _hasMoreData = false;
+      }
+
+      if (isLoadMore) {
+        _items.addAll(newItems);
+      } else {
+        _items = newItems;
+      }
     } catch (e) {
-      logger.log("InventoryProvider Error: Query failed", error: e);
-      _items = [];
+      logger.log("Provider Error: Query failed", error: e);
+      if (!isLoadMore) _items = [];
     }
   }
 
-  // --- USER ACTIONS (Trigger DB Calls) ---
+  // --- USER ACTIONS ---
 
+  /// NEW: Debounced Search
+  /// Waits 500ms after the last keystroke before hitting the database.
   void setSearchQuery(String query) {
     if (_searchQuery == query) return;
+
+    // 1. Update the value immediately so UI text fields don't lag
     _searchQuery = query;
 
-    // Trigger a DB query instead of filtering in-memory
-    _performQuery().then((_) {
-      notifyListeners();
+    // 2. Cancel previous timer if the user is still typing
+    if (_debounce?.isActive ?? false) _debounce!.cancel();
+
+    // 3. Start a new timer
+    _debounce = Timer(const Duration(milliseconds: 500), () {
+      // 4. Only trigger the DB query when the timer finishes
+      _resetAndReload().then((_) => notifyListeners());
     });
   }
 
   void setSort(SortOption option) {
     if (_currentSort == option) return;
     _currentSort = option;
-
-    // Trigger a re-sort in the DB
-    _performQuery().then((_) {
-      notifyListeners();
-    });
+    _resetAndReload().then((_) => notifyListeners());
   }
 
   // --- CRUD ACTIONS ---
 
   Future<void> addItem(Item item) async {
-    await DatabaseHelper.instance.create(item);
-    await _performQuery();
-    await _refreshTotalValue();
+    await _repository.createItem(item);
+    await _resetAndReload();
     notifyListeners();
   }
 
   Future<void> updateItem(Item item) async {
-    await DatabaseHelper.instance.update(item);
-    await _performQuery();
-    await _refreshTotalValue();
+    await _repository.updateItem(item);
+    await _resetAndReload();
     notifyListeners();
   }
 
   Future<void> deleteItem(int id) async {
-    // 1. Delete image files first to prevent zombies
-    final itemToDelete = _items.firstWhere((i) => i.id == id, orElse: () => Item(name: '', imagePaths: [], value: 0, purchaseDate: DateTime.now()));
-    /* Note: Image deletion logic usually goes here.
-       Ensure you import dart:io if you implement file deletion.
-    */
+    try {
+      await _repository.deleteItem(id);
 
-    // 2. Delete from DB
-    await DatabaseHelper.instance.delete(id);
+      _items.removeWhere((i) => i.id == id);
+      await _refreshTotalValue();
+      notifyListeners();
 
-    // 3. Update UI
-    _items.removeWhere((i) => i.id == id);
-    await _refreshTotalValue();
-    notifyListeners();
+      logger.log("Provider: Item $id deleted.");
+    } catch (e) {
+      logger.log("Provider Error deleting item $id", error: e);
+    }
   }
 
   Future<void> clearAll() async {
-    await DatabaseHelper.instance.deleteAllItems();
+    await _repository.clearAllItems();
+
     _items.clear();
     _totalValue = 0.0;
+    _currentPage = 0;
     notifyListeners();
   }
 
-  // --- HELPER COUNTS ---
-  // These now require a DB count or we just count what's loaded.
-  // For exact counts across the whole DB regardless of filter, we'd need a new DB method.
-  // For now, counting visible items is a safe fallback.
+  // --- HELPERS ---
   int getItemsCountInRoom(String roomName) => _items.where((i) => i.room == roomName).length;
   int getItemsCountInCategory(String catName) => _items.where((i) => i.category == catName).length;
 }
@@ -642,10 +699,12 @@ PATH: .\lib\providers\metadata_provider.dart
 ============================================================
 
 import 'package:flutter/material.dart';
-import '../data/database_helper.dart';
+import '../repositories/metadata_repository.dart'; // Uses Repo, not DB Helper
 import '../services/logger_service.dart';
 
 class MetadataProvider with ChangeNotifier {
+  final MetadataRepository _repository = MetadataRepository();
+
   List<String> _rooms = [];
   List<String> _categories = [];
   bool _isLoading = false;
@@ -664,8 +723,8 @@ class MetadataProvider with ChangeNotifier {
 
     try {
       final results = await Future.wait([
-        DatabaseHelper.instance.getRooms(),
-        DatabaseHelper.instance.getCategories(),
+        _repository.getRooms(),
+        _repository.getCategories(),
       ]);
       _rooms = results[0];
       _categories = results[1];
@@ -684,14 +743,14 @@ class MetadataProvider with ChangeNotifier {
     if (trimmed.isNotEmpty && !_rooms.contains(trimmed)) {
       _rooms.add(trimmed);
       _rooms.sort();
-      await DatabaseHelper.instance.saveRooms(_rooms);
+      await _repository.saveRooms(_rooms);
       notifyListeners();
     }
   }
 
   Future<void> removeRoom(String name) async {
     _rooms.remove(name);
-    await DatabaseHelper.instance.saveRooms(_rooms);
+    await _repository.saveRooms(_rooms);
     notifyListeners();
   }
 
@@ -702,14 +761,14 @@ class MetadataProvider with ChangeNotifier {
     if (trimmed.isNotEmpty && !_categories.contains(trimmed)) {
       _categories.add(trimmed);
       _categories.sort();
-      await DatabaseHelper.instance.saveCategories(_categories);
+      await _repository.saveCategories(_categories);
       notifyListeners();
     }
   }
 
   Future<void> removeCategory(String name) async {
     _categories.remove(name);
-    await DatabaseHelper.instance.saveCategories(_categories);
+    await _repository.saveCategories(_categories);
     notifyListeners();
   }
 }
@@ -770,6 +829,112 @@ class SettingsProvider with ChangeNotifier {
 }
 
 ============================================================
+PATH: .\lib\repositories\inventory_repository.dart
+============================================================
+
+import 'dart:io';
+import '../models/item.dart';
+import '../data/database_helper.dart';
+import '../services/logger_service.dart';
+import '../providers/inventory_provider.dart'; // Needed for SortOption enum
+
+class InventoryRepository {
+  // Singleton access to the Database
+  final DatabaseHelper _db = DatabaseHelper.instance;
+
+  /// Fetch items with Search, Sort, and Pagination support
+  Future<List<Item>> getItems({
+    required String query,
+    required SortOption sortOption,
+    int limit = 20,
+    int offset = 0,
+  }) async {
+    return await _db.queryItems(
+      query: query,
+      sortOption: sortOption,
+      limit: limit,
+      offset: offset,
+    );
+  }
+
+  /// Get the total value of the inventory
+  Future<double> getTotalValue() async {
+    return await _db.getTotalValue();
+  }
+
+  /// Create a new item
+  Future<Item> createItem(Item item) async {
+    return await _db.create(item);
+  }
+
+  /// Update an existing item
+  Future<int> updateItem(Item item) async {
+    return await _db.update(item);
+  }
+
+  /// Delete an item AND its associated images
+  Future<void> deleteItem(int id) async {
+    try {
+      // 1. Fetch item first to get image paths (Using internal helper or direct query)
+      // We perform a specific query here to ensure we get the paths before deletion
+      // even if the item isn't currently loaded in the UI list.
+      final db = await _db.database;
+      final results = await db.query('items', where: 'id = ?', whereArgs: [id]);
+
+      if (results.isNotEmpty) {
+        final item = Item.fromMap(results.first);
+
+        // 2. Delete Physical Files
+        for (String path in item.imagePaths) {
+          await _deleteFileSafe(path);
+        }
+      }
+
+      // 3. Delete DB Record
+      await _db.delete(id);
+      logger.log("Repo: Item $id and associated files deleted.");
+    } catch (e) {
+      logger.log("Repo Error: Failed to delete item $id", error: e);
+      rethrow;
+    }
+  }
+
+  /// Wipe entire inventory AND all associated images
+  Future<void> clearAllItems() async {
+    try {
+      // 1. Fetch ALL items to get paths
+      final allItems = await _db.readAllItems();
+
+      // 2. Delete All Files
+      for (var item in allItems) {
+        for (var path in item.imagePaths) {
+          await _deleteFileSafe(path);
+        }
+      }
+
+      // 3. Wipe DB
+      await _db.deleteAllItems();
+      logger.log("Repo: All items and files cleared.");
+    } catch (e) {
+      logger.log("Repo Error: Failed to clear all items", error: e);
+      rethrow;
+    }
+  }
+
+  /// Helper: Safely delete a file
+  Future<void> _deleteFileSafe(String path) async {
+    try {
+      final file = File(path);
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } catch (e) {
+      logger.log("Repo Warning: Could not delete file $path", error: e);
+    }
+  }
+}
+
+============================================================
 PATH: .\lib\repositories\list_repository.dart
 ============================================================
 
@@ -800,6 +965,53 @@ class ListRepository {
   }
 
   Future<void> updateCategories(List<String> categories) => _db.saveCategories(categories);
+}
+
+============================================================
+PATH: .\lib\repositories\metadata_repository.dart
+============================================================
+
+import '../data/database_helper.dart';
+import '../utils/app_constants.dart';
+
+class MetadataRepository {
+  final DatabaseHelper _db = DatabaseHelper.instance;
+
+  // --- ROOMS ---
+
+  Future<List<String>> getRooms() async {
+    final rooms = await _db.getRooms();
+    // FALLBACK: If DB is empty for some reason, return defaults
+    if (rooms.isEmpty) {
+      return AppConstants.defaultRooms;
+    }
+    return rooms;
+  }
+
+  Future<void> saveRooms(List<String> rooms) async {
+    await _db.saveRooms(rooms);
+  }
+
+  // --- CATEGORIES ---
+
+  Future<List<String>> getCategories() async {
+    final categories = await _db.getCategories();
+    // FALLBACK
+    if (categories.isEmpty) {
+      return AppConstants.defaultCategories;
+    }
+    return categories;
+  }
+
+  Future<void> saveCategories(List<String> categories) async {
+    await _db.saveCategories(categories);
+  }
+
+  /// Optional: Reset to factory defaults
+  Future<void> resetDefaults() async {
+    await saveRooms(AppConstants.defaultRooms);
+    await saveCategories(AppConstants.defaultCategories);
+  }
 }
 
 ============================================================
@@ -1784,13 +1996,14 @@ import '../providers/settings_provider.dart';
 import '../services/pdf_service.dart';
 import '../services/zip_service.dart';
 import '../services/export_service.dart';
+import '../models/item.dart';
 
-import '../widgets/barcode_scanner.dart';
+// Screens
 import 'add_item_screen.dart';
 import 'item_detail_screen.dart';
 import 'settings_screen.dart';
 import 'fast_add_screen.dart';
-
+import '../widgets/barcode_scanner.dart'; // Assumed existing widget
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -1813,20 +2026,33 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    _scrollController.addListener(() {
-      if (_scrollController.position.userScrollDirection == ScrollDirection.reverse) {
-        if (_showActions) setState(() => _showActions = false);
-      } else if (_scrollController.position.userScrollDirection == ScrollDirection.forward) {
-        if (!_showActions) setState(() => _showActions = true);
-      }
-    });
+    _scrollController.addListener(_onScroll);
   }
 
   @override
   void dispose() {
+    _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     _searchController.dispose();
     super.dispose();
+  }
+
+  /// Combined Scroll Logic:
+  /// 1. Hides/Shows the Action Dock based on direction.
+  /// 2. Triggers Pagination when near bottom.
+  void _onScroll() {
+    // 1. Action Dock Visibility
+    if (_scrollController.position.userScrollDirection == ScrollDirection.reverse) {
+      if (_showActions) setState(() => _showActions = false);
+    } else if (_scrollController.position.userScrollDirection == ScrollDirection.forward) {
+      if (!_showActions) setState(() => _showActions = true);
+    }
+
+    // 2. Pagination (Load More)
+    // Trigger when user is 200 pixels from the bottom
+    if (_scrollController.position.pixels >= _scrollController.position.maxScrollExtent - 200) {
+      context.read<InventoryProvider>().loadNextPage();
+    }
   }
 
   // --- SELECTION HELPERS ---
@@ -1865,7 +2091,9 @@ class _HomeScreenState extends State<HomeScreen> {
     );
 
     if (confirm == true) {
-      for (var id in _selectedIds) {
+      // Create a copy of ids to iterate safely
+      final idsToDelete = List<int>.from(_selectedIds);
+      for (var id in idsToDelete) {
         await provider.deleteItem(id);
       }
       _clearSelection();
@@ -1918,7 +2146,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // --- UI COMPONENTS ---
+  // --- EXPORT MENU ---
 
   void _showExportMenu(BuildContext context) {
     final provider = Provider.of<InventoryProvider>(context, listen: false);
@@ -1961,28 +2189,23 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // --- APP BAR BUILDER ---
+
   PreferredSizeWidget _buildAppBar(InventoryProvider provider, ThemeData theme) {
     if (_isSelectionMode) {
       return AppBar(
         backgroundColor: theme.colorScheme.secondaryContainer,
-        leading: IconButton(
-          icon: const Icon(Icons.close),
-          onPressed: _clearSelection,
-        ),
+        leading: IconButton(icon: const Icon(Icons.close), onPressed: _clearSelection),
         title: Text("${_selectedIds.length} Selected",
             style: TextStyle(color: theme.colorScheme.onSecondaryContainer, fontWeight: FontWeight.bold)),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.delete_outline),
-            onPressed: _confirmBatchDelete,
-          ),
+          IconButton(icon: const Icon(Icons.delete_outline), onPressed: _confirmBatchDelete),
         ],
       );
     }
 
     return AppBar(
       elevation: 0,
-      // Wrap the Title content to prevent the "99999 pixel" overflow
       title: _isSearching
           ? Container(
         height: 40,
@@ -2005,7 +2228,6 @@ class _HomeScreenState extends State<HomeScreen> {
       )
           : const Text('My Inventory', style: TextStyle(fontWeight: FontWeight.bold)),
       actions: [
-        // 1. Search Toggle Button (Shows 'Close' when searching)
         IconButton(
           icon: Icon(_isSearching ? Icons.close : Icons.search),
           onPressed: () {
@@ -2018,13 +2240,12 @@ class _HomeScreenState extends State<HomeScreen> {
             });
           },
         ),
-
-        // Only show these icons if NOT currently searching to save space
         if (!_isSearching) ...[
           IconButton(
             icon: const Icon(Icons.qr_code_scanner_rounded),
             tooltip: 'Scan Barcode',
             onPressed: () async {
+              // Ensure you have a BarcodeScannerWidget or similar logic
               final String? code = await Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => const BarcodeScannerWidget()),
               );
@@ -2046,10 +2267,7 @@ class _HomeScreenState extends State<HomeScreen> {
               const PopupMenuItem(value: SortOption.date, child: Text("Sort by Date")),
             ],
           ),
-          IconButton(
-            icon: const Icon(Icons.ios_share),
-            onPressed: () => _showExportMenu(context),
-          ),
+          IconButton(icon: const Icon(Icons.ios_share), onPressed: () => _showExportMenu(context)),
           IconButton(
             icon: const Icon(Icons.settings_outlined),
             onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (context) => const SettingsScreen())),
@@ -2059,10 +2277,20 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // --- MAIN BUILD ---
+
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<InventoryProvider>();
     final theme = Theme.of(context);
+
+    // Initial Loading State (First load only)
+    if (provider.isLoading && provider.items.isEmpty) {
+      return Scaffold(
+        appBar: _buildAppBar(provider, theme),
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
 
     return Scaffold(
       appBar: _buildAppBar(provider, theme),
@@ -2073,9 +2301,7 @@ class _HomeScreenState extends State<HomeScreen> {
               if (!_isSearching && provider.items.isNotEmpty && !_isSelectionMode)
                 _buildTotalValueBanner(theme, provider.totalValue),
               Expanded(
-                child: provider.isLoading
-                    ? const Center(child: CircularProgressIndicator())
-                    : _buildItemList(provider, theme),
+                child: _buildUnifiedItemList(provider, theme),
               ),
             ],
           ),
@@ -2107,8 +2333,8 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildItemList(InventoryProvider provider, ThemeData theme) {
-    final displayItems = provider.filteredItems;
+  Widget _buildUnifiedItemList(InventoryProvider provider, ThemeData theme) {
+    final displayItems = provider.items;
     final query = provider.searchQuery.toLowerCase();
 
     if (displayItems.isEmpty) {
@@ -2119,122 +2345,163 @@ class _HomeScreenState extends State<HomeScreen> {
             Icon(Icons.inventory_2_outlined, size: 64, color: Colors.grey[300]),
             const SizedBox(height: 16),
             Text(_isSearching ? 'No matches found.' : 'Inventory is empty.', style: const TextStyle(color: Colors.grey)),
+            if(!_isSearching)
+              Padding(
+                padding: const EdgeInsets.only(top: 20),
+                child: ElevatedButton.icon(
+                  onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const FastAddScreen())),
+                  label: const Text("Start Scanning"),
+                  icon: const Icon(Icons.camera_alt),
+                ),
+              )
           ],
         ),
       );
     }
 
-    return ListView.builder(
-      controller: _scrollController,
-      itemCount: displayItems.length + 1, // +1 for the sort label
-      padding: EdgeInsets.fromLTRB(0, 8, 0, _isSelectionMode ? 20 : 120),
-      itemBuilder: (context, index) {
-        // --- 1. SORT LABEL (First Item) ---
-        if (index == 0) {
-          String sortText = "Sorted by Name";
-          if (provider.currentSort == SortOption.value) sortText = "Sorted by Highest Value";
-          if (provider.currentSort == SortOption.date) sortText = "Sorted by Newest First";
+    // RefreshIndicator wraps the List
+    return RefreshIndicator(
+      onRefresh: () => provider.initializeData(),
+      child: ListView.builder(
+        controller: _scrollController,
+        // Count = SortHeader + Items + (BottomSpinner if loading more)
+        itemCount: 1 + displayItems.length + (provider.isLoadingMore ? 1 : 0),
+        // Extra padding at bottom to clear the Action Dock
+        padding: EdgeInsets.fromLTRB(0, 8, 0, _isSelectionMode ? 20 : 120),
+        itemBuilder: (context, index) {
 
-          return Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-            child: Text(sortText.toUpperCase(),
-                style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.grey[500], letterSpacing: 1.0)),
-          );
-        }
-
-        final item = displayItems[index - 1];
-        final bool incomplete = item.value == 0 || item.room == null;
-        final isSelected = _selectedIds.contains(item.id);
-
-        String subtitleText = "${item.room ?? 'Unassigned'} • ${item.category ?? 'General'}";
-
-        if (query.isNotEmpty) {
-          if (item.brand?.toLowerCase().contains(query) ?? false) {
-            subtitleText = "Brand: ${item.brand} • $subtitleText";
-          } else if (item.model?.toLowerCase().contains(query) ?? false) {
-            subtitleText = "Model: ${item.model} • $subtitleText";
-          } else if (item.serialNumber?.toLowerCase().contains(query) ?? false) {
-            subtitleText = "S/N: ${item.serialNumber} • $subtitleText";
+          // 0. Sort Label Header
+          if (index == 0) {
+            String sortText = "Sorted by Name";
+            if (provider.currentSort == SortOption.value) sortText = "Sorted by Highest Value";
+            if (provider.currentSort == SortOption.date) sortText = "Sorted by Newest First";
+            return Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+              child: Text(sortText.toUpperCase(),
+                  style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.grey[500], letterSpacing: 1.0)),
+            );
           }
-        }
 
-        return Column(
-          children: [
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
-              color: isSelected ? theme.colorScheme.primaryContainer.withOpacity(0.3) : Colors.transparent,
-              child: ListTile(
-                contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
-                onLongPress: () => _toggleSelection(item.id!),
-                onTap: () {
-                  if (_isSelectionMode) {
-                    _toggleSelection(item.id!);
-                  } else {
-                    Navigator.of(context).push(MaterialPageRoute(builder: (context) => ItemDetailScreen(itemId: item.id!)));
-                  }
-                },
-                leading: Stack(
-                  children: [
-                    Container(
-                      width: 54, height: 54,
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(12),
-                        color: theme.colorScheme.surfaceVariant,
-                        image: item.imagePaths.isNotEmpty
-                            ? DecorationImage(image: FileImage(File(item.imagePaths[0])), fit: BoxFit.cover)
-                            : null,
-                      ),
-                      child: item.imagePaths.isEmpty ? const Icon(Icons.image_outlined, color: Colors.grey) : null,
-                    ),
-                    if (isSelected)
-                      Positioned.fill(
-                        child: Container(
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(12),
-                            color: theme.colorScheme.primary.withOpacity(0.4),
-                          ),
-                          child: const Icon(Icons.check, color: Colors.white),
-                        ),
-                      ),
-                  ],
-                ),
-                title: _buildHighlightedText(
-                    item.name,
-                    provider.searchQuery,
-                    TextStyle(fontWeight: FontWeight.w600, fontSize: 15, color: theme.colorScheme.onSurface)
-                ),
-                subtitle: Padding(
-                  padding: const EdgeInsets.only(top: 4.0),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: _buildHighlightedText(
-                          subtitleText,
-                          provider.searchQuery,
-                          TextStyle(fontSize: 12, color: Colors.grey[600]),
-                        ),
-                      ),
-                      if (incomplete) _buildIncompleteBadge(),
-                    ],
+          // 2. Bottom Spinner (if triggered)
+          if (index == displayItems.length + 1) {
+            return const Padding(
+              padding: EdgeInsets.all(20),
+              child: Center(child: CircularProgressIndicator()),
+            );
+          }
+
+          // 1. Inventory Items
+          final itemIndex = index - 1; // Adjust for header
+          final item = displayItems[itemIndex];
+
+          return _buildItemRow(item, theme, query, provider);
+        },
+      ),
+    );
+  }
+
+  Widget _buildItemRow(Item item, ThemeData theme, String query, InventoryProvider provider) {
+    final bool incomplete = item.value == 0 || item.room == null;
+    final isSelected = _selectedIds.contains(item.id);
+
+    // Dynamic Subtitle based on search match
+    String subtitleText = "${item.room ?? 'Unassigned'} • ${item.category ?? 'General'}";
+    if (query.isNotEmpty) {
+      if (item.brand?.toLowerCase().contains(query) ?? false) {
+        subtitleText = "Brand: ${item.brand} • $subtitleText";
+      } else if (item.model?.toLowerCase().contains(query) ?? false) {
+        subtitleText = "Model: ${item.model} • $subtitleText";
+      } else if (item.serialNumber?.toLowerCase().contains(query) ?? false) {
+        subtitleText = "S/N: ${item.serialNumber} • $subtitleText";
+      }
+    }
+
+    return Column(
+      children: [
+        AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          color: isSelected ? theme.colorScheme.primaryContainer.withOpacity(0.3) : Colors.transparent,
+          child: ListTile(
+            contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+            onLongPress: () => _toggleSelection(item.id!),
+            onTap: () {
+              if (_isSelectionMode) {
+                _toggleSelection(item.id!);
+              } else {
+                // Pass full Item object if supported, otherwise just ID
+                Navigator.of(context).push(MaterialPageRoute(builder: (context) => ItemDetailScreen(item: item, itemId: null,)));
+              }
+            },
+            leading: Stack(
+              children: [
+                Container(
+                  width: 54, height: 54,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    color: theme.colorScheme.surfaceVariant,
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: _buildItemThumbnail(item),
                   ),
                 ),
-                trailing: _isSelectionMode
-                    ? Checkbox(
-                  value: isSelected,
-                  onChanged: (_) => _toggleSelection(item.id!),
-                  shape: const CircleBorder(),
-                )
-                    : Text(
-                  NumberFormat.simpleCurrency(decimalDigits: 0).format(item.value),
-                  style: TextStyle(fontWeight: FontWeight.bold, color: theme.colorScheme.primary),
-                ),
+                if (isSelected)
+                  Positioned.fill(
+                    child: Container(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(12),
+                        color: theme.colorScheme.primary.withOpacity(0.4),
+                      ),
+                      child: const Icon(Icons.check, color: Colors.white),
+                    ),
+                  ),
+              ],
+            ),
+            title: _buildHighlightedText(
+                item.name,
+                provider.searchQuery,
+                TextStyle(fontWeight: FontWeight.w600, fontSize: 15, color: theme.colorScheme.onSurface)
+            ),
+            subtitle: Padding(
+              padding: const EdgeInsets.only(top: 4.0),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: _buildHighlightedText(
+                      subtitleText,
+                      provider.searchQuery,
+                      TextStyle(fontSize: 12, color: Colors.grey[600]),
+                    ),
+                  ),
+                  if (incomplete) _buildIncompleteBadge(),
+                ],
               ),
             ),
-            const Divider(height: 1, indent: 86),
-          ],
-        );
-      },
+            trailing: _isSelectionMode
+                ? Checkbox(
+              value: isSelected,
+              onChanged: (_) => _toggleSelection(item.id!),
+              shape: const CircleBorder(),
+            )
+                : Text(
+              NumberFormat.simpleCurrency(decimalDigits: 0).format(item.value),
+              style: TextStyle(fontWeight: FontWeight.bold, color: theme.colorScheme.primary),
+            ),
+          ),
+        ),
+        const Divider(height: 1, indent: 86),
+      ],
     );
+  }
+
+  Widget _buildItemThumbnail(Item item) {
+    if (item.imagePaths.isNotEmpty) {
+      final file = File(item.imagePaths[0]);
+      if (file.existsSync()) {
+        return Image.file(file, fit: BoxFit.cover, errorBuilder: (c,e,s) => const Icon(Icons.broken_image, color: Colors.grey));
+      }
+    }
+    return const Icon(Icons.image_outlined, color: Colors.grey);
   }
 
   Widget _buildActionDock(ThemeData theme) {
@@ -2315,36 +2582,117 @@ PATH: .\lib\screens\item_detail_screen.dart
 
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; // Added for clipboard functionality
+import 'package:flutter/services.dart'; // For Clipboard
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import '../models/item.dart';
 import '../providers/inventory_provider.dart';
 import 'add_item_screen.dart';
 
-class ItemDetailScreen extends StatelessWidget {
-  final int itemId;
-  const ItemDetailScreen({super.key, required this.itemId});
+class ItemDetailScreen extends StatefulWidget {
+  final int? itemId;
+  final Item? item; // Optimization: Pass object for instant load
+
+  const ItemDetailScreen({
+    super.key,
+    this.itemId,
+    this.item,
+  });
 
   @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final provider = context.watch<InventoryProvider>();
+  State<ItemDetailScreen> createState() => _ItemDetailScreenState();
+}
 
-    // Find item or return fallback
-    final item = provider.items.firstWhere(
-          (i) => i.id == itemId,
-      orElse: () => Item(
-        name: 'Deleted',
-        imagePaths: [],
-        value: 0,
-        purchaseDate: DateTime.now(),
+class _ItemDetailScreenState extends State<ItemDetailScreen> {
+  late Item _item;
+  bool _isLoading = true;
+  bool _isDeleted = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeItem();
+  }
+
+  void _initializeItem() {
+    // 1. Instant Load: Use passed object if available
+    if (widget.item != null) {
+      _item = widget.item!;
+      _isLoading = false;
+      return;
+    }
+
+    // 2. Fallback: Fetch from Provider using ID
+    if (widget.itemId != null) {
+      final provider = Provider.of<InventoryProvider>(context, listen: false);
+      try {
+        _item = provider.items.firstWhere((i) => i.id == widget.itemId);
+        _isLoading = false;
+      } catch (e) {
+        // Item not found (likely deleted)
+        _isDeleted = true;
+        _isLoading = false;
+      }
+    } else {
+      _isDeleted = true;
+      _isLoading = false;
+    }
+  }
+
+  /// Reloads item data from Provider (useful after Editing)
+  void _refreshItem() {
+    if (_isDeleted) return;
+    final provider = Provider.of<InventoryProvider>(context, listen: false);
+    try {
+      final freshItem = provider.items.firstWhere((i) => i.id == _item.id);
+      setState(() {
+        _item = freshItem;
+      });
+    } catch (e) {
+      setState(() => _isDeleted = true);
+    }
+  }
+
+  Future<void> _confirmDelete() async {
+    final provider = Provider.of<InventoryProvider>(context, listen: false);
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Delete Item?"),
+        content: Text("This will permanently remove '${_item.name}' from your inventory."),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("CANCEL")),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text("DELETE"),
+          ),
+        ],
       ),
     );
 
-    if (item.name == 'Deleted') {
-      return const Scaffold(body: Center(child: Text("Item no longer exists.")));
+    if (confirmed == true && mounted) {
+      await provider.deleteItem(_item.id!);
+      if (mounted) Navigator.pop(context);
     }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    if (_isDeleted) return const Scaffold(body: Center(child: Text("Item no longer exists.")));
+
+    // Watch for external updates (e.g. background sync or batch delete)
+    final provider = context.watch<InventoryProvider>();
+    try {
+      // Sync local item with provider state if possible
+      _item = provider.items.firstWhere((i) => i.id == _item.id, orElse: () => _item);
+    } catch (e) {
+      // If provider is empty/cleared, keep showing local copy or exit
+    }
+
+    final theme = Theme.of(context);
 
     return Scaffold(
       appBar: AppBar(
@@ -2353,15 +2701,18 @@ class ItemDetailScreen extends StatelessWidget {
           IconButton(
             icon: const Icon(Icons.edit_outlined),
             tooltip: 'Edit Item',
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => AddItemScreen(itemToEdit: item)),
-            ),
+            onPressed: () async {
+              await Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => AddItemScreen(itemToEdit: _item)),
+              );
+              _refreshItem(); // Update UI with edited values
+            },
           ),
           IconButton(
             icon: const Icon(Icons.delete_outline),
             tooltip: 'Delete Item',
-            onPressed: () => _confirmDelete(context, provider, item),
+            onPressed: _confirmDelete,
           ),
         ],
       ),
@@ -2369,26 +2720,27 @@ class ItemDetailScreen extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _buildImageGallery(context, item),
+            _buildImageGallery(context, _item),
             Padding(
               padding: const EdgeInsets.all(20.0),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _buildHeader(theme, item),
+                  _buildHeader(theme, _item),
                   const SizedBox(height: 24),
 
-                  // Priority Insurance Info
-                  if (item.warrantyExpiry != null) _buildWarrantyCard(theme, item),
-                  if (item.serialNumber != null) _buildSerialCard(context, theme, item.serialNumber!),
+                  // Priority Cards
+                  if (_item.warrantyExpiry != null) _buildWarrantyCard(theme, _item),
+                  if (_item.serialNumber != null && _item.serialNumber!.isNotEmpty)
+                    _buildSerialCard(context, theme, _item.serialNumber!),
 
                   const Divider(height: 40),
 
                   // Specifics Grid
-                  _buildInfoGrid(theme, item),
+                  _buildInfoGrid(theme, _item),
 
                   const SizedBox(height: 24),
-                  if (item.notes != null && item.notes!.isNotEmpty) _buildNotes(theme, item),
+                  if (_item.notes != null && _item.notes!.isNotEmpty) _buildNotes(theme, _item),
                   const SizedBox(height: 40),
                 ],
               ),
@@ -2402,17 +2754,32 @@ class ItemDetailScreen extends StatelessWidget {
   // --- UI COMPONENTS ---
 
   Widget _buildImageGallery(BuildContext context, Item item) {
-    if (item.imagePaths.isEmpty) return const SizedBox.shrink();
+    if (item.imagePaths.isEmpty) {
+      return Container(
+        height: 200,
+        width: double.infinity,
+        color: Colors.grey[200],
+        child: const Icon(Icons.image_not_supported, size: 64, color: Colors.grey),
+      );
+    }
+
     return SizedBox(
       height: 320,
       child: PageView.builder(
         itemCount: item.imagePaths.length,
         itemBuilder: (context, index) {
+          final path = item.imagePaths[index];
+          final file = File(path);
           final bool isReceipt = item.receiptIndices.contains(index);
+
           return Stack(
             fit: StackFit.expand,
             children: [
-              Image.file(File(item.imagePaths[index]), fit: BoxFit.cover),
+              if (file.existsSync())
+                Image.file(file, fit: BoxFit.cover)
+              else
+                Container(color: Colors.grey, child: const Icon(Icons.broken_image)),
+
               if (isReceipt)
                 Positioned(
                   top: 16, right: 16,
@@ -2421,6 +2788,17 @@ class ItemDetailScreen extends StatelessWidget {
                     side: BorderSide.none,
                     label: const Text("RECEIPT", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 10)),
                     avatar: const Icon(Icons.receipt_long, color: Colors.white, size: 14),
+                  ),
+                ),
+
+              // Page Indicator (e.g., 1/3)
+              if (item.imagePaths.length > 1)
+                Positioned(
+                  bottom: 16, right: 16,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(20)),
+                    child: Text("${index + 1} / ${item.imagePaths.length}", style: const TextStyle(color: Colors.white, fontSize: 12)),
                   ),
                 ),
             ],
@@ -2567,28 +2945,6 @@ class ItemDetailScreen extends StatelessWidget {
           child: Text(item.notes!, style: const TextStyle(height: 1.5)),
         ),
       ],
-    );
-  }
-
-  void _confirmDelete(BuildContext context, InventoryProvider provider, Item item) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text("Delete Item?"),
-        content: Text("This will permanently remove ${item.name} from your inventory."),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("CANCEL")),
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () {
-              provider.deleteItem(item.id!);
-              Navigator.pop(ctx);
-              Navigator.pop(context);
-            },
-            child: const Text("DELETE"),
-          ),
-        ],
-      ),
     );
   }
 }
@@ -3627,6 +3983,34 @@ class ZipService {
       return false;
     }
   }
+}
+
+============================================================
+PATH: .\lib\utils\app_constants.dart
+============================================================
+
+class AppConstants {
+  static const List<String> defaultRooms = [
+    'Living Room',
+    'Kitchen',
+    'Bedroom',
+    'Garage',
+    'Office',
+    'Basement',
+    'Attic',
+    'Dining Room'
+  ];
+
+  static const List<String> defaultCategories = [
+    'Electronics',
+    'Furniture',
+    'Jewelry',
+    'Tools',
+    'Appliances',
+    'Clothing',
+    'Musical Instruments',
+    'Collectibles'
+  ];
 }
 
 ============================================================

@@ -9,13 +9,14 @@ import '../providers/settings_provider.dart';
 import '../services/pdf_service.dart';
 import '../services/zip_service.dart';
 import '../services/export_service.dart';
+import '../models/item.dart';
 
-import '../widgets/barcode_scanner.dart';
+// Screens
 import 'add_item_screen.dart';
 import 'item_detail_screen.dart';
 import 'settings_screen.dart';
 import 'fast_add_screen.dart';
-
+import '../widgets/barcode_scanner.dart'; // Assumed existing widget
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -38,20 +39,33 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    _scrollController.addListener(() {
-      if (_scrollController.position.userScrollDirection == ScrollDirection.reverse) {
-        if (_showActions) setState(() => _showActions = false);
-      } else if (_scrollController.position.userScrollDirection == ScrollDirection.forward) {
-        if (!_showActions) setState(() => _showActions = true);
-      }
-    });
+    _scrollController.addListener(_onScroll);
   }
 
   @override
   void dispose() {
+    _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     _searchController.dispose();
     super.dispose();
+  }
+
+  /// Combined Scroll Logic:
+  /// 1. Hides/Shows the Action Dock based on direction.
+  /// 2. Triggers Pagination when near bottom.
+  void _onScroll() {
+    // 1. Action Dock Visibility
+    if (_scrollController.position.userScrollDirection == ScrollDirection.reverse) {
+      if (_showActions) setState(() => _showActions = false);
+    } else if (_scrollController.position.userScrollDirection == ScrollDirection.forward) {
+      if (!_showActions) setState(() => _showActions = true);
+    }
+
+    // 2. Pagination (Load More)
+    // Trigger when user is 200 pixels from the bottom
+    if (_scrollController.position.pixels >= _scrollController.position.maxScrollExtent - 200) {
+      context.read<InventoryProvider>().loadNextPage();
+    }
   }
 
   // --- SELECTION HELPERS ---
@@ -90,7 +104,9 @@ class _HomeScreenState extends State<HomeScreen> {
     );
 
     if (confirm == true) {
-      for (var id in _selectedIds) {
+      // Create a copy of ids to iterate safely
+      final idsToDelete = List<int>.from(_selectedIds);
+      for (var id in idsToDelete) {
         await provider.deleteItem(id);
       }
       _clearSelection();
@@ -143,7 +159,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // --- UI COMPONENTS ---
+  // --- EXPORT MENU ---
 
   void _showExportMenu(BuildContext context) {
     final provider = Provider.of<InventoryProvider>(context, listen: false);
@@ -186,28 +202,23 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // --- APP BAR BUILDER ---
+
   PreferredSizeWidget _buildAppBar(InventoryProvider provider, ThemeData theme) {
     if (_isSelectionMode) {
       return AppBar(
         backgroundColor: theme.colorScheme.secondaryContainer,
-        leading: IconButton(
-          icon: const Icon(Icons.close),
-          onPressed: _clearSelection,
-        ),
+        leading: IconButton(icon: const Icon(Icons.close), onPressed: _clearSelection),
         title: Text("${_selectedIds.length} Selected",
             style: TextStyle(color: theme.colorScheme.onSecondaryContainer, fontWeight: FontWeight.bold)),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.delete_outline),
-            onPressed: _confirmBatchDelete,
-          ),
+          IconButton(icon: const Icon(Icons.delete_outline), onPressed: _confirmBatchDelete),
         ],
       );
     }
 
     return AppBar(
       elevation: 0,
-      // Wrap the Title content to prevent the "99999 pixel" overflow
       title: _isSearching
           ? Container(
         height: 40,
@@ -230,7 +241,6 @@ class _HomeScreenState extends State<HomeScreen> {
       )
           : const Text('My Inventory', style: TextStyle(fontWeight: FontWeight.bold)),
       actions: [
-        // 1. Search Toggle Button (Shows 'Close' when searching)
         IconButton(
           icon: Icon(_isSearching ? Icons.close : Icons.search),
           onPressed: () {
@@ -243,13 +253,12 @@ class _HomeScreenState extends State<HomeScreen> {
             });
           },
         ),
-
-        // Only show these icons if NOT currently searching to save space
         if (!_isSearching) ...[
           IconButton(
             icon: const Icon(Icons.qr_code_scanner_rounded),
             tooltip: 'Scan Barcode',
             onPressed: () async {
+              // Ensure you have a BarcodeScannerWidget or similar logic
               final String? code = await Navigator.of(context).push(
                 MaterialPageRoute(builder: (_) => const BarcodeScannerWidget()),
               );
@@ -271,10 +280,7 @@ class _HomeScreenState extends State<HomeScreen> {
               const PopupMenuItem(value: SortOption.date, child: Text("Sort by Date")),
             ],
           ),
-          IconButton(
-            icon: const Icon(Icons.ios_share),
-            onPressed: () => _showExportMenu(context),
-          ),
+          IconButton(icon: const Icon(Icons.ios_share), onPressed: () => _showExportMenu(context)),
           IconButton(
             icon: const Icon(Icons.settings_outlined),
             onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (context) => const SettingsScreen())),
@@ -284,10 +290,20 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // --- MAIN BUILD ---
+
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<InventoryProvider>();
     final theme = Theme.of(context);
+
+    // Initial Loading State (First load only)
+    if (provider.isLoading && provider.items.isEmpty) {
+      return Scaffold(
+        appBar: _buildAppBar(provider, theme),
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
 
     return Scaffold(
       appBar: _buildAppBar(provider, theme),
@@ -298,9 +314,7 @@ class _HomeScreenState extends State<HomeScreen> {
               if (!_isSearching && provider.items.isNotEmpty && !_isSelectionMode)
                 _buildTotalValueBanner(theme, provider.totalValue),
               Expanded(
-                child: provider.isLoading
-                    ? const Center(child: CircularProgressIndicator())
-                    : _buildItemList(provider, theme),
+                child: _buildUnifiedItemList(provider, theme),
               ),
             ],
           ),
@@ -332,8 +346,8 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildItemList(InventoryProvider provider, ThemeData theme) {
-    final displayItems = provider.filteredItems;
+  Widget _buildUnifiedItemList(InventoryProvider provider, ThemeData theme) {
+    final displayItems = provider.items;
     final query = provider.searchQuery.toLowerCase();
 
     if (displayItems.isEmpty) {
@@ -344,122 +358,163 @@ class _HomeScreenState extends State<HomeScreen> {
             Icon(Icons.inventory_2_outlined, size: 64, color: Colors.grey[300]),
             const SizedBox(height: 16),
             Text(_isSearching ? 'No matches found.' : 'Inventory is empty.', style: const TextStyle(color: Colors.grey)),
+            if(!_isSearching)
+              Padding(
+                padding: const EdgeInsets.only(top: 20),
+                child: ElevatedButton.icon(
+                  onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const FastAddScreen())),
+                  label: const Text("Start Scanning"),
+                  icon: const Icon(Icons.camera_alt),
+                ),
+              )
           ],
         ),
       );
     }
 
-    return ListView.builder(
-      controller: _scrollController,
-      itemCount: displayItems.length + 1, // +1 for the sort label
-      padding: EdgeInsets.fromLTRB(0, 8, 0, _isSelectionMode ? 20 : 120),
-      itemBuilder: (context, index) {
-        // --- 1. SORT LABEL (First Item) ---
-        if (index == 0) {
-          String sortText = "Sorted by Name";
-          if (provider.currentSort == SortOption.value) sortText = "Sorted by Highest Value";
-          if (provider.currentSort == SortOption.date) sortText = "Sorted by Newest First";
+    // RefreshIndicator wraps the List
+    return RefreshIndicator(
+      onRefresh: () => provider.initializeData(),
+      child: ListView.builder(
+        controller: _scrollController,
+        // Count = SortHeader + Items + (BottomSpinner if loading more)
+        itemCount: 1 + displayItems.length + (provider.isLoadingMore ? 1 : 0),
+        // Extra padding at bottom to clear the Action Dock
+        padding: EdgeInsets.fromLTRB(0, 8, 0, _isSelectionMode ? 20 : 120),
+        itemBuilder: (context, index) {
 
-          return Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-            child: Text(sortText.toUpperCase(),
-                style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.grey[500], letterSpacing: 1.0)),
-          );
-        }
-
-        final item = displayItems[index - 1];
-        final bool incomplete = item.value == 0 || item.room == null;
-        final isSelected = _selectedIds.contains(item.id);
-
-        String subtitleText = "${item.room ?? 'Unassigned'} • ${item.category ?? 'General'}";
-
-        if (query.isNotEmpty) {
-          if (item.brand?.toLowerCase().contains(query) ?? false) {
-            subtitleText = "Brand: ${item.brand} • $subtitleText";
-          } else if (item.model?.toLowerCase().contains(query) ?? false) {
-            subtitleText = "Model: ${item.model} • $subtitleText";
-          } else if (item.serialNumber?.toLowerCase().contains(query) ?? false) {
-            subtitleText = "S/N: ${item.serialNumber} • $subtitleText";
+          // 0. Sort Label Header
+          if (index == 0) {
+            String sortText = "Sorted by Name";
+            if (provider.currentSort == SortOption.value) sortText = "Sorted by Highest Value";
+            if (provider.currentSort == SortOption.date) sortText = "Sorted by Newest First";
+            return Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+              child: Text(sortText.toUpperCase(),
+                  style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.grey[500], letterSpacing: 1.0)),
+            );
           }
-        }
 
-        return Column(
-          children: [
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
-              color: isSelected ? theme.colorScheme.primaryContainer.withOpacity(0.3) : Colors.transparent,
-              child: ListTile(
-                contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
-                onLongPress: () => _toggleSelection(item.id!),
-                onTap: () {
-                  if (_isSelectionMode) {
-                    _toggleSelection(item.id!);
-                  } else {
-                    Navigator.of(context).push(MaterialPageRoute(builder: (context) => ItemDetailScreen(itemId: item.id!)));
-                  }
-                },
-                leading: Stack(
-                  children: [
-                    Container(
-                      width: 54, height: 54,
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(12),
-                        color: theme.colorScheme.surfaceVariant,
-                        image: item.imagePaths.isNotEmpty
-                            ? DecorationImage(image: FileImage(File(item.imagePaths[0])), fit: BoxFit.cover)
-                            : null,
-                      ),
-                      child: item.imagePaths.isEmpty ? const Icon(Icons.image_outlined, color: Colors.grey) : null,
-                    ),
-                    if (isSelected)
-                      Positioned.fill(
-                        child: Container(
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(12),
-                            color: theme.colorScheme.primary.withOpacity(0.4),
-                          ),
-                          child: const Icon(Icons.check, color: Colors.white),
-                        ),
-                      ),
-                  ],
-                ),
-                title: _buildHighlightedText(
-                    item.name,
-                    provider.searchQuery,
-                    TextStyle(fontWeight: FontWeight.w600, fontSize: 15, color: theme.colorScheme.onSurface)
-                ),
-                subtitle: Padding(
-                  padding: const EdgeInsets.only(top: 4.0),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: _buildHighlightedText(
-                          subtitleText,
-                          provider.searchQuery,
-                          TextStyle(fontSize: 12, color: Colors.grey[600]),
-                        ),
-                      ),
-                      if (incomplete) _buildIncompleteBadge(),
-                    ],
+          // 2. Bottom Spinner (if triggered)
+          if (index == displayItems.length + 1) {
+            return const Padding(
+              padding: EdgeInsets.all(20),
+              child: Center(child: CircularProgressIndicator()),
+            );
+          }
+
+          // 1. Inventory Items
+          final itemIndex = index - 1; // Adjust for header
+          final item = displayItems[itemIndex];
+
+          return _buildItemRow(item, theme, query, provider);
+        },
+      ),
+    );
+  }
+
+  Widget _buildItemRow(Item item, ThemeData theme, String query, InventoryProvider provider) {
+    final bool incomplete = item.value == 0 || item.room == null;
+    final isSelected = _selectedIds.contains(item.id);
+
+    // Dynamic Subtitle based on search match
+    String subtitleText = "${item.room ?? 'Unassigned'} • ${item.category ?? 'General'}";
+    if (query.isNotEmpty) {
+      if (item.brand?.toLowerCase().contains(query) ?? false) {
+        subtitleText = "Brand: ${item.brand} • $subtitleText";
+      } else if (item.model?.toLowerCase().contains(query) ?? false) {
+        subtitleText = "Model: ${item.model} • $subtitleText";
+      } else if (item.serialNumber?.toLowerCase().contains(query) ?? false) {
+        subtitleText = "S/N: ${item.serialNumber} • $subtitleText";
+      }
+    }
+
+    return Column(
+      children: [
+        AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          color: isSelected ? theme.colorScheme.primaryContainer.withOpacity(0.3) : Colors.transparent,
+          child: ListTile(
+            contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+            onLongPress: () => _toggleSelection(item.id!),
+            onTap: () {
+              if (_isSelectionMode) {
+                _toggleSelection(item.id!);
+              } else {
+                // Pass full Item object if supported, otherwise just ID
+                Navigator.of(context).push(MaterialPageRoute(builder: (context) => ItemDetailScreen(item: item, itemId: null,)));
+              }
+            },
+            leading: Stack(
+              children: [
+                Container(
+                  width: 54, height: 54,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    color: theme.colorScheme.surfaceVariant,
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: _buildItemThumbnail(item),
                   ),
                 ),
-                trailing: _isSelectionMode
-                    ? Checkbox(
-                  value: isSelected,
-                  onChanged: (_) => _toggleSelection(item.id!),
-                  shape: const CircleBorder(),
-                )
-                    : Text(
-                  NumberFormat.simpleCurrency(decimalDigits: 0).format(item.value),
-                  style: TextStyle(fontWeight: FontWeight.bold, color: theme.colorScheme.primary),
-                ),
+                if (isSelected)
+                  Positioned.fill(
+                    child: Container(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(12),
+                        color: theme.colorScheme.primary.withOpacity(0.4),
+                      ),
+                      child: const Icon(Icons.check, color: Colors.white),
+                    ),
+                  ),
+              ],
+            ),
+            title: _buildHighlightedText(
+                item.name,
+                provider.searchQuery,
+                TextStyle(fontWeight: FontWeight.w600, fontSize: 15, color: theme.colorScheme.onSurface)
+            ),
+            subtitle: Padding(
+              padding: const EdgeInsets.only(top: 4.0),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: _buildHighlightedText(
+                      subtitleText,
+                      provider.searchQuery,
+                      TextStyle(fontSize: 12, color: Colors.grey[600]),
+                    ),
+                  ),
+                  if (incomplete) _buildIncompleteBadge(),
+                ],
               ),
             ),
-            const Divider(height: 1, indent: 86),
-          ],
-        );
-      },
+            trailing: _isSelectionMode
+                ? Checkbox(
+              value: isSelected,
+              onChanged: (_) => _toggleSelection(item.id!),
+              shape: const CircleBorder(),
+            )
+                : Text(
+              NumberFormat.simpleCurrency(decimalDigits: 0).format(item.value),
+              style: TextStyle(fontWeight: FontWeight.bold, color: theme.colorScheme.primary),
+            ),
+          ),
+        ),
+        const Divider(height: 1, indent: 86),
+      ],
     );
+  }
+
+  Widget _buildItemThumbnail(Item item) {
+    if (item.imagePaths.isNotEmpty) {
+      final file = File(item.imagePaths[0]);
+      if (file.existsSync()) {
+        return Image.file(file, fit: BoxFit.cover, errorBuilder: (c,e,s) => const Icon(Icons.broken_image, color: Colors.grey));
+      }
+    }
+    return const Icon(Icons.image_outlined, color: Colors.grey);
   }
 
   Widget _buildActionDock(ThemeData theme) {

@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
-import '../data/database_helper.dart';
+import '../repositories/metadata_repository.dart'; // Uses Repo, not DB Helper
 import '../services/logger_service.dart';
 
 class MetadataProvider with ChangeNotifier {
+  final MetadataRepository _repository = MetadataRepository();
+
   List<String> _rooms = [];
   List<String> _categories = [];
   bool _isLoading = false;
@@ -21,8 +23,8 @@ class MetadataProvider with ChangeNotifier {
 
     try {
       final results = await Future.wait([
-        DatabaseHelper.instance.getRooms(),
-        DatabaseHelper.instance.getCategories(),
+        _repository.getRooms(),
+        _repository.getCategories(),
       ]);
       _rooms = results[0];
       _categories = results[1];
@@ -41,14 +43,14 @@ class MetadataProvider with ChangeNotifier {
     if (trimmed.isNotEmpty && !_rooms.contains(trimmed)) {
       _rooms.add(trimmed);
       _rooms.sort();
-      await DatabaseHelper.instance.saveRooms(_rooms);
+      await _repository.saveRooms(_rooms);
       notifyListeners();
     }
   }
 
   Future<void> removeRoom(String name) async {
     _rooms.remove(name);
-    await DatabaseHelper.instance.saveRooms(_rooms);
+    await _repository.saveRooms(_rooms);
     notifyListeners();
   }
 
@@ -59,14 +61,14 @@ class MetadataProvider with ChangeNotifier {
     if (trimmed.isNotEmpty && !_categories.contains(trimmed)) {
       _categories.add(trimmed);
       _categories.sort();
-      await DatabaseHelper.instance.saveCategories(_categories);
+      await _repository.saveCategories(_categories);
       notifyListeners();
     }
   }
 
   Future<void> removeCategory(String name) async {
     _categories.remove(name);
-    await DatabaseHelper.instance.saveCategories(_categories);
+    await _repository.saveCategories(_categories);
     notifyListeners();
   }
 }
