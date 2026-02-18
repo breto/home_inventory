@@ -7,8 +7,9 @@ import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
 import '../models/item.dart';
 import '../providers/inventory_provider.dart';
+import '../providers/metadata_provider.dart'; // NEW IMPORT
 import 'package:flutter_image_compress/flutter_image_compress.dart';
-import '../widgets/barcode_scanner.dart';
+// import '../widgets/barcode_scanner.dart'; // Uncomment if you have this widget
 
 class AddItemScreen extends StatefulWidget {
   final Item? itemToEdit;
@@ -29,7 +30,7 @@ class _AddItemScreenState extends State<AddItemScreen> {
   final _modelController = TextEditingController();
   final _notesController = TextEditingController();
 
-  // State Variables
+  // State
   List<File> _imageFiles = [];
   List<int> _receiptIndices = [];
   String? _selectedRoom;
@@ -88,39 +89,37 @@ class _AddItemScreenState extends State<AddItemScreen> {
     );
     if (picked != null) {
       setState(() {
-        if (isPurchaseDate) _purchaseDate = picked;
-        else _warrantyExpiry = picked;
+        if (isPurchaseDate) _purchaseDate = picked; else _warrantyExpiry = picked;
       });
     }
   }
 
   Future<void> _saveItem() async {
     if (_isSaving || !_formKey.currentState!.validate()) return;
+
     if (_imageFiles.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('At least one photo is required.')));
       return;
     }
 
     setState(() => _isSaving = true);
+
     try {
       final appDir = await getApplicationDocumentsDirectory();
       List<String> savedPaths = [];
 
       for (var file in _imageFiles) {
-        // If image is already in app dir (editing existing), keep it
         if (file.path.contains(appDir.path)) {
           savedPaths.add(file.path);
         } else {
-          // Compress and save new images
           final fileName = 'img_${DateTime.now().millisecondsSinceEpoch}_${path.basename(file.path)}';
           final targetPath = '${appDir.path}/$fileName';
+
           var result = await FlutterImageCompress.compressAndGetFile(
-            file.absolute.path,
-            targetPath,
-            quality: 70,
-            minWidth: 1024,
-            minHeight: 1024,
+            file.absolute.path, targetPath,
+            quality: 70, minWidth: 1024, minHeight: 1024,
           );
+
           savedPaths.add(result?.path ?? (await file.copy(targetPath)).path);
         }
       }
@@ -161,15 +160,16 @@ class _AddItemScreenState extends State<AddItemScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final provider = context.watch<InventoryProvider>();
-    final roomOptions = ["None", ...provider.rooms];
-    final categoryOptions = ["None", ...provider.categories];
+
+    // CHANGED: Watch MetadataProvider for rooms/categories
+    final metadata = context.watch<MetadataProvider>();
+
+    final roomOptions = ["None", ...metadata.rooms];
+    final categoryOptions = ["None", ...metadata.categories];
 
     return Scaffold(
       appBar: AppBar(title: Text(widget.itemToEdit == null ? 'Add Full Item' : 'Edit Item')),
-      body: _isSaving
-          ? const Center(child: CircularProgressIndicator())
-          : SingleChildScrollView(
+      body: _isSaving ? const Center(child: CircularProgressIndicator()) : SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Form(
           key: _formKey,
@@ -220,7 +220,102 @@ class _AddItemScreenState extends State<AddItemScreen> {
     );
   }
 
-  // --- COMPONENTS ---
+  // --- WIDGET BUILDERS ---
+
+  Widget _buildTextField(TextEditingController controller, String label, IconData icon, {bool isNumber = false, bool isRequired = false, int maxLines = 1}) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: TextFormField(
+        controller: controller,
+        keyboardType: isNumber ? const TextInputType.numberWithOptions(decimal: true) : TextInputType.text,
+        maxLines: maxLines,
+        validator: isRequired ? (val) => val == null || val.isEmpty ? 'Required' : null : null,
+        decoration: InputDecoration(
+          labelText: label,
+          prefixIcon: Icon(icon),
+          border: const OutlineInputBorder(),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildScanTextField(TextEditingController controller, String label, IconData icon) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: TextFormField(
+        controller: controller,
+        decoration: InputDecoration(
+          labelText: label,
+          prefixIcon: Icon(icon),
+          border: const OutlineInputBorder(),
+          suffixIcon: IconButton(
+            icon: const Icon(Icons.center_focus_weak),
+            onPressed: () {
+              // Add Barcode Scanner logic here if needed
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDropdown(String label, String? value, List<String> options, Function(String?) onChanged) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: DropdownButtonFormField<String>(
+        value: options.contains(value) ? value : null,
+        decoration: InputDecoration(labelText: label, border: const OutlineInputBorder()),
+        items: options.map((String val) {
+          return DropdownMenuItem<String>(
+            value: val,
+            child: Text(val),
+          );
+        }).toList(),
+        onChanged: onChanged,
+      ),
+    );
+  }
+
+  Widget _buildDatePicker(String label, DateTime? date, VoidCallback onTap, {bool isOptional = false}) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 16),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+        decoration: BoxDecoration(
+          border: Border.all(color: Colors.grey),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+            const SizedBox(height: 4),
+            Text(
+              date == null ? 'Not Set' : DateFormat.yMMMd().format(date),
+              style: const TextStyle(fontSize: 16),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSaveButton(ThemeData theme) {
+    return SizedBox(
+      width: double.infinity,
+      child: ElevatedButton.icon(
+        onPressed: _saveItem,
+        style: ElevatedButton.styleFrom(
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          backgroundColor: theme.colorScheme.primary,
+          foregroundColor: theme.colorScheme.onPrimary,
+        ),
+        icon: const Icon(Icons.save),
+        label: const Text('SAVE ITEM', style: TextStyle(fontWeight: FontWeight.bold)),
+      ),
+    );
+  }
 
   Widget _buildPhotoHeader() {
     return const Padding(
@@ -240,6 +335,29 @@ class _AddItemScreenState extends State<AddItemScreen> {
           bool isReceipt = _receiptIndices.contains(i);
           return _buildPhotoPreview(i, isReceipt);
         },
+      ),
+    );
+  }
+
+  Widget _buildAddPhotoButton(ThemeData theme) {
+    return GestureDetector(
+      onTap: () => _showImageSourceSheet(),
+      child: Container(
+        width: 110,
+        margin: const EdgeInsets.only(right: 12, top: 10),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surfaceVariant,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: theme.colorScheme.outlineVariant, width: 1),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.add_a_photo, color: theme.colorScheme.primary),
+            const SizedBox(height: 8),
+            Text("Add Photo", style: TextStyle(fontSize: 12, color: theme.colorScheme.onSurfaceVariant)),
+          ],
+        ),
       ),
     );
   }
@@ -277,7 +395,7 @@ class _AddItemScreenState extends State<AddItemScreen> {
               child: Row(children: [
                 const Icon(Icons.receipt_long, size: 12, color: Colors.white),
                 const SizedBox(width: 4),
-                Text(isReceipt ? "Receipt" : "Tag Receipt", style: const TextStyle(color: Colors.white, fontSize: 10)),
+                Text(isReceipt ? "Receipt" : "Mark Receipt", style: const TextStyle(color: Colors.white, fontSize: 10)),
               ]),
             ),
           ),
@@ -286,120 +404,16 @@ class _AddItemScreenState extends State<AddItemScreen> {
     );
   }
 
-  Widget _buildTextField(TextEditingController controller, String label, IconData icon, {bool isNumber = false, int maxLines = 1, bool isRequired = false}) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16),
-      child: TextFormField(
-        controller: controller,
-        maxLines: maxLines,
-        keyboardType: isNumber ? const TextInputType.numberWithOptions(decimal: true) : TextInputType.text,
-        decoration: InputDecoration(
-          labelText: isRequired ? label : '$label (Optional)',
-          prefixIcon: Icon(icon),
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-        ),
-        validator: (v) => (isRequired && (v == null || v.trim().isEmpty)) ? 'Please enter $label' : null,
-      ),
-    );
-  }
-
-  Widget _buildScanTextField(TextEditingController controller, String label, IconData icon) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16),
-      child: TextFormField(
-        controller: controller,
-        decoration: InputDecoration(
-          labelText: '$label (Optional)',
-          prefixIcon: Icon(icon),
-          suffixIcon: IconButton(
-            icon: Icon(Icons.camera_alt, color: Theme.of(context).colorScheme.primary),
-            onPressed: () async {
-              final String? scannedCode = await Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => const BarcodeScannerWidget())
-              );
-              if (scannedCode != null && mounted) setState(() => controller.text = scannedCode);
-            },
-          ),
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildDatePicker(String label, DateTime? date, VoidCallback onTap, {bool isOptional = false}) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16),
-      child: InkWell(
-        onTap: onTap,
-        child: InputDecorator(
-          decoration: InputDecoration(
-            labelText: isOptional ? '$label (Optional)' : label,
-            border: const OutlineInputBorder(),
-          ),
-          child: Text(date == null ? 'Select Date' : DateFormat('MMM d, yyyy').format(date)),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildDropdown(String label, String? value, List<String> items, Function(String?) onChanged) {
-    final effectiveValue = items.contains(value) ? value : "None";
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16),
-      child: DropdownButtonFormField<String>(
-        value: effectiveValue,
-        decoration: InputDecoration(labelText: '$label (Optional)', border: OutlineInputBorder(borderRadius: BorderRadius.circular(8))),
-        items: items.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
-        onChanged: onChanged,
-      ),
-    );
-  }
-
-  Widget _buildAddPhotoButton(ThemeData theme) {
-    return GestureDetector(
-      onTap: () => _showPickerOptions(),
-      child: Container(
-        margin: const EdgeInsets.only(top: 10),
-        width: 100,
-        decoration: BoxDecoration(
-            color: theme.colorScheme.surfaceVariant,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: theme.colorScheme.outlineVariant)
-        ),
-        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          Icon(Icons.add_a_photo, color: theme.colorScheme.primary),
-          const SizedBox(height: 4),
-          Text("Add Photo", style: TextStyle(fontSize: 12, color: theme.colorScheme.primary)),
-        ]),
-      ),
-    );
-  }
-
-  void _showPickerOptions() {
+  void _showImageSourceSheet() {
     showModalBottomSheet(
       context: context,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (ctx) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 20),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          ListTile(leading: const Icon(Icons.camera_alt), title: const Text('Take Photo'), onTap: () { Navigator.pop(ctx); _pickImage(ImageSource.camera); }),
-          ListTile(leading: const Icon(Icons.photo_library), title: const Text('From Gallery'), onTap: () { Navigator.pop(ctx); _pickImage(ImageSource.gallery); }),
-        ]),
-      ),
-    );
-  }
-
-  Widget _buildSaveButton(ThemeData theme) {
-    return ElevatedButton.icon(
-      onPressed: _saveItem,
-      icon: const Icon(Icons.check_circle),
-      label: const Text('SAVE TO INVENTORY', style: TextStyle(fontWeight: FontWeight.bold)),
-      style: ElevatedButton.styleFrom(
-        minimumSize: const Size(double.infinity, 60),
-        backgroundColor: theme.colorScheme.primary,
-        foregroundColor: theme.colorScheme.onPrimary,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      builder: (ctx) => SafeArea(
+        child: Wrap(
+          children: [
+            ListTile(leading: const Icon(Icons.photo_library), title: const Text('Gallery'), onTap: () { Navigator.pop(ctx); _pickImage(ImageSource.gallery); }),
+            ListTile(leading: const Icon(Icons.camera_alt), title: const Text('Camera'), onTap: () { Navigator.pop(ctx); _pickImage(ImageSource.camera); }),
+          ],
+        ),
       ),
     );
   }

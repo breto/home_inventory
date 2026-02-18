@@ -1,8 +1,8 @@
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import '../models/item.dart';
-import 'dart:developer' as dev;
-import '../services/logger_service.dart'; // Import your new logger
+import '../services/logger_service.dart';
+import '../providers/inventory_provider.dart'; // Needed for SortOption enum
 
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
@@ -23,7 +23,7 @@ class DatabaseHelper {
     final dbPath = await getDatabasesPath();
     final path = join(dbPath, filePath);
 
-    logger.log("Initializing Database at path: $path");
+    logger.log("DB: Initializing at $path");
 
     try {
       return await openDatabase(
@@ -38,9 +38,17 @@ class DatabaseHelper {
     }
   }
 
-  Future _createDB(Database db, int version) async {
-    logger.log("Creating new Database version: $version");
+  /// Closes the connection (Required for Zip Restore)
+  Future<void> close() async {
+    final db = _database;
+    if (db != null) {
+      await db.close();
+      _database = null;
+      logger.log("DB: Connection closed.");
+    }
+  }
 
+  Future _createDB(Database db, int version) async {
     await db.execute('''
       CREATE TABLE items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -69,90 +77,118 @@ class DatabaseHelper {
     final cats = ['Electronics', 'Furniture', 'Jewelry', 'Tools', 'Appliances'];
     for (var c in cats) await db.insert('categories', {'name': c});
 
-    logger.log("Database tables created and seeded with default rooms/categories.");
+    logger.log("DB: Created tables and seeded data.");
   }
 
   Future _onUpgrade(Database db, int oldVersion, int newVersion) async {
-    logger.log("DATABASE UPGRADE: Migrating from $oldVersion to $newVersion");
+    logger.log("DB: Upgrading from $oldVersion to $newVersion");
     if (oldVersion < 5) {
       try {
         await db.execute('ALTER TABLE items ADD COLUMN warrantyExpiry TEXT');
         await db.execute('ALTER TABLE items ADD COLUMN receiptIndices TEXT');
-        logger.log("Migration successful: Added warranty and receipt columns.");
       } catch (e) {
-        logger.log("Migration Note: Columns might already exist.", error: e);
+        // Column likely exists
       }
     }
   }
 
-  // --- CRUD OPERATIONS ---
+  // --- OPTIMIZED SEARCH & SORT ---
+
+  /// SCALABLE QUERY: Performs filtering and sorting inside SQLite.
+  /// This prevents loading 1000s of items into RAM just to sort them.
+  Future<List<Item>> queryItems({
+    required String query,
+    required SortOption sortOption
+  }) async {
+    final db = await instance.database;
+
+    String orderBy;
+    switch (sortOption) {
+      case SortOption.name:
+        orderBy = 'name ASC';
+        break;
+      case SortOption.value:
+        orderBy = 'value DESC'; // Highest value first
+        break;
+      case SortOption.date:
+        orderBy = 'purchaseDate DESC'; // Newest first
+        break;
+    }
+
+    // If query is empty, return all (sorted)
+    if (query.trim().isEmpty) {
+      final result = await db.query('items', orderBy: orderBy);
+      return result.map((json) => Item.fromMap(json)).toList();
+    }
+
+    // If query exists, search across multiple columns
+    final searchPattern = '%${query.toLowerCase()}%';
+
+    // SQLite "LIKE" is case-insensitive by default in standard builds,
+    // but we use LOWER() to be safe across all Android versions.
+    final whereClause = '''
+      LOWER(name) LIKE ? OR 
+      LOWER(brand) LIKE ? OR 
+      LOWER(model) LIKE ? OR 
+      LOWER(serialNumber) LIKE ? OR 
+      LOWER(room) LIKE ? OR 
+      LOWER(category) LIKE ? OR 
+      LOWER(notes) LIKE ?
+    ''';
+
+    final args = List.filled(7, searchPattern); // Fill args for the 7 ? placeholders
+
+    final result = await db.query(
+      'items',
+      where: whereClause,
+      whereArgs: args,
+      orderBy: orderBy,
+    );
+
+    return result.map((json) => Item.fromMap(json)).toList();
+  }
+
+  /// AGGREGATE: Calculates total value instantly without fetching items
+  Future<double> getTotalValue() async {
+    final db = await instance.database;
+    final result = await db.rawQuery('SELECT SUM(value) as total FROM items');
+    if (result.isNotEmpty && result.first['total'] != null) {
+      return (result.first['total'] as num).toDouble();
+    }
+    return 0.0;
+  }
+
+  // --- STANDARD CRUD ---
 
   Future<Item> create(Item item) async {
-    try {
-      final db = await instance.database;
-      final id = await db.insert('items', item.toMap());
-      logger.log("DB: Created item '${item.name}' with ID: $id");
-      return item.copyWith(id: id);
-    } catch (e) {
-      logger.log("DB ERROR: Create failed for '${item.name}'", error: e);
-      rethrow;
-    }
+    final db = await instance.database;
+    final id = await db.insert('items', item.toMap());
+    logger.log("DB: Created Item ID $id");
+    return item.copyWith(id: id);
   }
 
   Future<List<Item>> readAllItems() async {
-    try {
-      final db = await instance.database;
-      final result = await db.query('items', orderBy: 'name ASC');
-      logger.log("DB: Fetched ${result.length} items.");
-      return result.map((json) => Item.fromMap(json)).toList();
-    } catch (e) {
-      logger.log("DB ERROR: ReadAllItems failed", error: e);
-      return [];
-    }
+    final db = await instance.database;
+    final result = await db.query('items', orderBy: 'name ASC');
+    return result.map((json) => Item.fromMap(json)).toList();
   }
 
   Future<int> update(Item item) async {
-    try {
-      final db = await instance.database;
-      final rowsAffected = await db.update(
-        'items',
-        item.toMap(),
-        where: 'id = ?',
-        whereArgs: [item.id],
-      );
-      logger.log("DB: Updated item ID ${item.id}. Rows affected: $rowsAffected");
-      return rowsAffected;
-    } catch (e) {
-      logger.log("DB ERROR: Update failed for ID ${item.id}", error: e);
-      rethrow;
-    }
+    final db = await instance.database;
+    return await db.update('items', item.toMap(), where: 'id = ?', whereArgs: [item.id]);
   }
 
   Future<int> delete(int id) async {
-    try {
-      final db = await instance.database;
-      final rowsAffected = await db.delete('items', where: 'id = ?', whereArgs: [id]);
-      logger.log("DB: Deleted item ID $id. Rows affected: $rowsAffected");
-      return rowsAffected;
-    } catch (e) {
-      logger.log("DB ERROR: Delete failed for ID $id", error: e);
-      rethrow;
-    }
+    final db = await instance.database;
+    return await db.delete('items', where: 'id = ?', whereArgs: [id]);
   }
 
   Future<int> deleteAllItems() async {
-    try {
-      final db = await instance.database;
-      final count = await db.delete('items');
-      logger.log("DB: CLEARED ALL ITEMS. $count rows removed.");
-      return count;
-    } catch (e) {
-      logger.log("DB ERROR: DeleteAllItems failed", error: e);
-      rethrow;
-    }
+    final db = await instance.database;
+    return await db.delete('items');
   }
 
-  // --- LIST HELPERS ---
+  // --- METADATA ---
 
   Future<List<String>> getRooms() async {
     final db = await database;
@@ -161,18 +197,13 @@ class DatabaseHelper {
   }
 
   Future<void> saveRooms(List<String> rooms) async {
-    try {
-      final db = await database;
-      await db.transaction((txn) async {
-        await txn.delete('rooms');
-        for (var r in rooms) {
-          await txn.insert('rooms', {'name': r}, conflictAlgorithm: ConflictAlgorithm.replace);
-        }
-      });
-      logger.log("DB: Saved ${rooms.length} rooms.");
-    } catch (e) {
-      logger.log("DB ERROR: SaveRooms failed", error: e);
-    }
+    final db = await database;
+    await db.transaction((txn) async {
+      await txn.delete('rooms');
+      for (var r in rooms) {
+        await txn.insert('rooms', {'name': r}, conflictAlgorithm: ConflictAlgorithm.replace);
+      }
+    });
   }
 
   Future<List<String>> getCategories() async {
@@ -182,17 +213,12 @@ class DatabaseHelper {
   }
 
   Future<void> saveCategories(List<String> categories) async {
-    try {
-      final db = await database;
-      await db.transaction((txn) async {
-        await txn.delete('categories');
-        for (var c in categories) {
-          await txn.insert('categories', {'name': c}, conflictAlgorithm: ConflictAlgorithm.replace);
-        }
-      });
-      logger.log("DB: Saved ${categories.length} categories.");
-    } catch (e) {
-      logger.log("DB ERROR: SaveCategories failed", error: e);
-    }
+    final db = await database;
+    await db.transaction((txn) async {
+      await txn.delete('categories');
+      for (var c in categories) {
+        await txn.insert('categories', {'name': c}, conflictAlgorithm: ConflictAlgorithm.replace);
+      }
+    });
   }
 }
